@@ -1,0 +1,6 @@
+{
+  "name": "AudioFlix",
+  "description": "Central Completa de Músicas, Discografias e Reparo Inteligente de Áudio. Ouça músicas 100% completas sem cortes de 30s, busque discografias organizadas e repare pendrives.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

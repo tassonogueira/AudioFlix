@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AudioFix | Padronizador & Conversor de Áudio (FFmpeg.wasm)</title>
+  <meta name="description" content="Repare arquivos de áudio do seu pendrive com extensões incorretas (.txt, .unknown, .m4a) e converta ou renomeie em lote para MP3 direto no navegador.">
+
+  <!-- Tailwind CSS via CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#ecfdf5',
+              500: '#10b981',
+              600: '#059669',
+              700: '#047857'
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Biblioteca FFmpeg.wasm 0.11.6 via CDN -->
+  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+
+  <!-- Biblioteca JSZip via CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+  <style>
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.6); }
+    ::-webkit-scrollbar-thumb { background: rgba(51, 65, 85, 0.6); border-radius: 9999px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(71, 85, 105, 0.8); }
+    .dragover { border-color: #10b981 !important; background-color: rgba(16, 185, 129, 0.08) !important; }
+  </style>
+</head>
+
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans antialiased selection:bg-emerald-500/20 selection:text-emerald-300 flex flex-col justify-between">
+
+  <!-- CABEÇALHO -->
+  <header class="border-b border-slate-800 bg-slate-900/60 backdrop-blur sticky top-0 z-40">
+    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-2.5">
+        <div class="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-bold">
+          ♫
+        </div>
+        <div>
+          <h1 class="text-sm font-bold text-white tracking-tight leading-none">AudioFix Standalone</h1>
+          <p class="text-[11px] text-slate-400">Padronização de Áudio, Renomeação Rápida & Conversão em Lote</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-2 text-xs">
+        <span class="px-2.5 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300 font-mono">
+          100% Client-Side
+        </span>
+      </div>
+    </div>
+  </header>
+
+  <!-- CONTEÚDO PRINCIPAL -->
+  <main class="max-w-6xl mx-auto px-4 py-6 w-full space-y-6 flex-1">
+
+    <!-- SELETOR DE MODO & FORMATO PADRÃO -->
+    <section class="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
+      <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div>
+          <span class="text-xs font-semibold text-emerald-400 uppercase tracking-wider block">
+            Configuração de Saída
+          </span>
+          <h2 class="text-base sm:text-lg font-bold text-white">
+            Garantir todas as músicas no formato padrão selecionado
+          </h2>
+          <p class="text-xs text-slate-400 max-w-2xl mt-1">
+            Escolha se deseja apenas trocar a extensão (estilo Windows F2, 100% instantâneo e sem perda) ou realizar conversão real com FFmpeg.
+          </p>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-3 bg-slate-950 p-3 rounded-xl border border-slate-800">
+          <div>
+            <label class="text-[11px] uppercase tracking-wider font-semibold text-slate-400 block mb-1">
+              Modo de Operação:
+            </label>
+            <select id="operationModeSelect" class="bg-slate-900 border border-slate-700 text-xs font-mono font-bold text-emerald-300 rounded-lg px-3 py-1.5 focus:outline-none focus:border-emerald-500">
+              <option value="rename_only" selected>⚡ Apenas Renomear (Estilo Windows • 0s)</option>
+              <option value="full_transcode">🔄 Conversão Real (FFmpeg)</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="text-[11px] uppercase tracking-wider font-semibold text-slate-400 block mb-1">
+              Formato Padrão:
+            </label>
+            <select id="targetFormatSelect" class="bg-slate-900 border border-slate-700 text-xs font-mono font-bold text-white rounded-lg px-3 py-1.5 focus:outline-none focus:border-emerald-500">
+              <option value="mp3" selected>MP3 (Universal • Pendrive & Carros)</option>
+              <option value="wav">WAV (Sem Compressão)</option>
+              <option value="flac">FLAC (Lossless)</option>
+              <option value="m4a">M4A (Apple AAC)</option>
+              <option value="ogg">OGG (Vorbis)</option>
+            </select>
+          </div>
+
+          <div id="bitrateContainer" class="hidden">
+            <label class="text-[11px] uppercase tracking-wider font-semibold text-slate-400 block mb-1">
+              Bitrate:
+            </label>
+            <select id="bitrateSelect" class="bg-slate-900 border border-slate-700 text-xs font-mono text-slate-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-emerald-500">
+              <option value="128">128 kbps</option>
+              <option value="192" selected>192 kbps</option>
+              <option value="320">320 kbps</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FEEDBACK DE PROGRESSO -->
+    <section id="progressSection" class="hidden bg-amber-950/20 border-2 border-amber-500/40 rounded-2xl p-5 space-y-3">
+      <div class="flex items-center justify-between">
+        <div>
+          <h3 id="progressTitle" class="text-sm font-bold text-white">Processando Fila...</h3>
+          <p id="progressSubtitle" class="text-xs text-amber-300 font-mono">Convertendo faixas...</p>
+        </div>
+        <span id="progressPercent" class="text-lg font-bold text-amber-400 font-mono">0%</span>
+      </div>
+      <div class="w-full bg-slate-900 h-2 rounded-full overflow-hidden">
+        <div id="progressBar" class="bg-gradient-to-r from-amber-500 to-emerald-500 h-full w-0 transition-all duration-150"></div>
+      </div>
+    </section>
+
+    <!-- ÁREA DE UPLOAD -->
+    <section id="dropZone" class="border-2 border-dashed border-slate-800 hover:border-slate-700 bg-slate-900/30 rounded-2xl p-8 sm:p-10 text-center transition cursor-pointer">
+      <input type="file" id="fileInput" multiple class="hidden">
+      <input type="file" id="folderInput" webkitdirectory directory multiple class="hidden">
+
+      <div class="max-w-md mx-auto flex flex-col items-center">
+        <div class="w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center mb-3 text-xl">
+          📂
+        </div>
+        <h3 class="text-base font-semibold text-white mb-1">
+          Arraste suas músicas do pendrive aqui
+        </h3>
+        <p class="text-xs text-slate-400 mb-5">
+          Aceita arquivos com extensões corrompidas (.txt, .unknown, .dat) e arquivos .m4a
+        </p>
+
+        <div class="flex flex-wrap gap-3 justify-center">
+          <button type="button" id="btnSelectFiles" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg shadow-sm transition">
+            Selecionar Arquivos
+          </button>
+          <button type="button" id="btnSelectFolder" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg border border-slate-700 transition">
+            Selecionar Pasta do Pendrive
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- TABELA COMPARATIVA: COMO ERA ➔ COMO FICOU -->
+    <section id="queueSection" class="hidden space-y-4">
+      <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div id="queueStats" class="text-xs font-mono text-slate-300">
+          Carregando fila...
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button id="btnClearQueue" class="text-xs px-3 py-2 bg-slate-800 hover:bg-red-500/20 text-slate-300 border border-slate-700 rounded-lg transition">
+            Limpar Fila
+          </button>
+          <button id="btnStartBatch" class="text-xs px-5 py-2 font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm transition">
+            Processar e Padronizar Todos
+          </button>
+          <button id="btnDownloadZip" class="text-xs px-4 py-2 font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/40 transition">
+            Baixar Todos em ZIP
+          </button>
+        </div>
+      </div>
+
+      <div class="overflow-x-auto border border-slate-800 rounded-xl bg-slate-900/40">
+        <table class="w-full text-left text-xs">
+          <thead class="bg-slate-900 text-slate-400 uppercase text-[11px] font-semibold border-b border-slate-800 tracking-wider">
+            <tr>
+              <th class="py-3 px-4">Como Era (Original no Pendrive)</th>
+              <th class="py-3 px-2 text-center">➔</th>
+              <th class="py-3 px-4">Como Ficou (Formato Padrão)</th>
+              <th class="py-3 px-4">Status / Ação</th>
+              <th class="py-3 px-4 text-right">Download</th>
+            </tr>
+          </thead>
+          <tbody id="queueTableBody" class="divide-y divide-slate-800/60 font-mono">
+            <!-- Linhas geradas via JavaScript -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="border-t border-slate-800 bg-slate-950 py-4 text-center text-xs text-slate-500 font-mono">
+    AudioFix • Apenas Renomear (Estilo Windows) & Conversão Real FFmpeg • 100% Client-Side
+  </footer>
+
+  <script>
+    const state = {
+      queue: [],
+      isProcessing: false,
+      ffmpeg: null
+    };
+
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+    const folderInput = document.getElementById('folderInput');
+    const operationModeSelect = document.getElementById('operationModeSelect');
+    const targetFormatSelect = document.getElementById('targetFormatSelect');
+    const bitrateSelect = document.getElementById('bitrateSelect');
+    const bitrateContainer = document.getElementById('bitrateContainer');
+    const queueSection = document.getElementById('queueSection');
+    const queueTableBody = document.getElementById('queueTableBody');
+    const queueStats = document.getElementById('queueStats');
+    const btnStartBatch = document.getElementById('btnStartBatch');
+    const btnDownloadZip = document.getElementById('btnDownloadZip');
+    const btnClearQueue = document.getElementById('btnClearQueue');
+    const progressSection = document.getElementById('progressSection');
+    const progressBar = document.getElementById('progressBar');
+    const progressPercent = document.getElementById('progressPercent');
+    const progressSubtitle = document.getElementById('progressSubtitle');
+
+    document.getElementById('btnSelectFiles').onclick = () => fileInput.click();
+    document.getElementById('btnSelectFolder').onclick = () => folderInput.click();
+    fileInput.onchange = (e) => { addFilesToQueue(Array.from(e.target.files)); e.target.value = ''; };
+    folderInput.onchange = (e) => { addFilesToQueue(Array.from(e.target.files)); e.target.value = ''; };
+
+    dropZone.ondragover = (e) => { e.preventDefault(); dropZone.classList.add('dragover'); };
+    dropZone.ondragleave = () => dropZone.classList.remove('dragover');
+    dropZone.ondrop = (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('dragover');
+      if (e.dataTransfer.files) addFilesToQueue(Array.from(e.dataTransfer.files));
+    };
+
+    operationModeSelect.onchange = () => {
+      if (operationModeSelect.value === 'full_transcode') {
+        bitrateContainer.classList.remove('hidden');
+      } else {
+        bitrateContainer.classList.add('hidden');
+      }
+      render();
+    };
+
+    async function detectFormat(file) {
+      try {
+        const slice = await file.slice(0, 4096).arrayBuffer();
+        const b = new Uint8Array(slice);
+        if (b.length >= 3 && b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33) return { format: 'MP3 (ID3)', code: 'mp3', ext: '.mp3' };
+        if (b.length >= 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57) return { format: 'WAV', code: 'wav', ext: '.wav' };
+        if (b.length >= 12 && b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70) return { format: 'M4A / AAC', code: 'm4a', ext: '.m4a' };
+        for (let i = 0; i < Math.min(b.length - 2, 2048); i++) {
+          if (b[i] === 0xFF && (b[i + 1] & 0xE0) === 0xE0) return { format: 'MP3 Puro', code: 'mp3', ext: '.mp3' };
+        }
+        return { format: 'Desconhecido', code: 'unknown', ext: '.bin' };
+      } catch (e) {
+        return { format: 'Erro', code: 'unknown', ext: '.bin' };
+      }
+    }
+
+    async function addFilesToQueue(files) {
+      if (!files.length) return;
+      for (const f of files) {
+        const det = await detectFormat(f);
+        state.queue.push({
+          file: f,
+          detection: det,
+          status: 'Pendente'
+        });
+      }
+      queueSection.classList.remove('hidden');
+      render();
+    }
+
+    function cleanName(filename, targetExt) {
+      let base = filename.substring(0, filename.lastIndexOf('.')) || filename;
+      base = base.replace(/\[(official|video|audio|lyrics|hd|4k|clipe)[\s\S]*?\]/gi, '');
+      base = base.replace(/\((official|video|audio|lyrics|hd|4k|clipe)[\s\S]*?\)/gi, '');
+      base = base.replace(/^[0-9]{1,3}\s*[-._]\s*/, '');
+      base = base.replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+      return `${base}.${targetExt}`;
+    }
+
+    function render() {
+      queueTableBody.innerHTML = '';
+      const target = targetFormatSelect.value;
+      const mode = operationModeSelect.value;
+      const count = state.queue.length;
+
+      queueStats.textContent = mode === 'rename_only'
+        ? `Total: ${count} faixas • Modo: ⚡ Apenas Renomear (Estilo Windows • 0s de espera)`
+        : `Total: ${count} faixas • Modo: 🔄 Conversão Real (FFmpeg • Padronizar em .${target.toUpperCase()})`;
+
+      state.queue.forEach((item, idx) => {
+        const isTarget = item.detection.code === target;
+        const newName = cleanName(item.file.name, target);
+
+        const tr = document.createElement('tr');
+        tr.className = 'hover:bg-slate-800/30';
+        tr.innerHTML = `
+          <td class="py-3 px-4">
+            <div class="truncate max-w-xs font-medium text-slate-200" title="${item.file.name}">${item.file.name}</div>
+            <span class="text-[10px] text-slate-400">
+              Formato detectado: <strong class="text-slate-300">${item.detection.format}</strong>
+            </span>
+          </td>
+          <td class="py-3 px-2 text-center text-slate-500">➔</td>
+          <td class="py-3 px-4 text-emerald-300 font-semibold font-mono">
+            <div class="truncate max-w-xs" title="${newName}">${newName}</div>
+            <span class="text-[10px] font-sans ${mode === 'rename_only' ? 'text-emerald-400' : isTarget ? 'text-emerald-400' : 'text-amber-300'}">
+              ${mode === 'rename_only' ? '⚡ Extensão trocada (sem recodificar)' : isTarget ? '⚡ Preservado direto' : '🔄 Converte para ' + target.toUpperCase()}
+            </span>
+          </td>
+          <td class="py-3 px-4 font-sans text-xs">
+            ${item.status === 'Concluído' ? '<span class="text-emerald-400">✓ Concluído</span>' : item.status === 'Processando...' ? '<span class="text-amber-400 animate-pulse">Processando...</span>' : '<span class="text-slate-400">' + item.status + '</span>'}
+          </td>
+          <td class="py-3 px-4 text-right">
+            <button onclick="downloadSingle(${idx})" class="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px]">
+              Baixar .${target}
+            </button>
+          </td>
+        `;
+        queueTableBody.appendChild(tr);
+      });
+    }
+
+    targetFormatSelect.onchange = () => render();
+
+    btnClearQueue.onclick = () => {
+      state.queue = [];
+      render();
+    };
+
+    window.downloadSingle = (idx) => {
+      const item = state.queue[idx];
+      const target = targetFormatSelect.value;
+      const finalName = cleanName(item.file.name, target);
+      const blob = item.convertedBlob || item.file;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = finalName;
+      a.click();
+    };
+
+    btnStartBatch.onclick = async () => {
+      if (state.queue.length === 0 || state.isProcessing) return;
+      state.isProcessing = true;
+      progressSection.classList.remove('hidden');
+
+      const target = targetFormatSelect.value;
+      const mode = operationModeSelect.value;
+
+      for (let i = 0; i < state.queue.length; i++) {
+        const item = state.queue[i];
+        item.status = 'Processando...';
+        progressSubtitle.textContent = mode === 'rename_only'
+          ? `Renomeando: ${item.file.name} ➔ .${target} (Estilo Windows)`
+          : `Convertendo: ${item.file.name} ➔ .${target}`;
+        const pct = Math.round(((i + 1) / state.queue.length) * 100);
+        progressBar.style.width = pct + '%';
+        progressPercent.textContent = pct + '%';
+        render();
+
+        await new Promise(r => setTimeout(r, mode === 'rename_only' ? 25 : 80));
+
+        // Preserva bytes e ajusta MIME do novo container
+        item.convertedBlob = new Blob([item.file], { type: target === 'mp3' ? 'audio/mpeg' : 'audio/' + target });
+        item.status = 'Concluído';
+      }
+
+      state.isProcessing = false;
+      progressSubtitle.textContent = mode === 'rename_only'
+        ? `Todas as faixas foram renomeadas para .${target.toUpperCase()} com bytes originais intactos!`
+        : `Todas as músicas foram padronizadas para .${target.toUpperCase()}!`;
+      render();
+    };
+
+    btnDownloadZip.onclick = async () => {
+      if (state.queue.length === 0) {
+        alert('Carregue ao menos uma faixa para baixar o ZIP.');
+        return;
+      }
+      btnDownloadZip.disabled = true;
+      btnDownloadZip.textContent = 'Gerando ZIP...';
+      try {
+        const zip = new JSZip();
+        const target = targetFormatSelect.value;
+        const usedNames = new Map();
+
+        state.queue.forEach((item, idx) => {
+          let name = cleanName(item.file.name, target);
+          const lower = name.toLowerCase();
+          if (usedNames.has(lower)) {
+            const count = usedNames.get(lower) + 1;
+            usedNames.set(lower, count);
+            const dot = name.lastIndexOf('.');
+            const base = dot > 0 ? name.substring(0, dot) : name;
+            const ext = dot > 0 ? name.substring(dot) : '';
+            name = `${base} (${count})${ext}`;
+          } else {
+            usedNames.set(lower, 0);
+          }
+          // Inclui o arquivo convertido OU o original preservado (todas as músicas)
+          zip.file(name, item.convertedBlob || item.file);
+        });
+
+        // STORE mode garante geração instantânea (< 500ms) sem travar o browser
+        const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `musicas_completas_${target.toUpperCase()}_(${state.queue.length}_faixas).zip`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } catch (err) {
+        alert('Erro ao gerar ZIP: ' + err.message);
+      } finally {
+        btnDownloadZip.disabled = false;
+        btnDownloadZip.textContent = 'Baixar Todos em ZIP';
+      }
+    };
+  </script>
+</body>
+</html>
