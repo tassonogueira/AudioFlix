@@ -97,7 +97,7 @@ export default function MobileQueueDrawer({
             </span>
             <div className="flex items-center gap-3 bg-slate-950/80 p-2.5 rounded-xl border border-emerald-500/30">
               <div className="w-12 h-12 rounded-lg overflow-hidden bg-slate-900 shrink-0 relative">
-                {currentTrack.artwork ? (
+                {currentTrack.artwork && currentTrack.artwork.trim() !== '' ? (
                   <img
                     src={currentTrack.artwork}
                     alt={currentTrack.title}
@@ -231,7 +231,7 @@ export default function MobileQueueDrawer({
                     </div>
 
                     <div className="w-10 h-10 rounded-lg overflow-hidden bg-slate-900 shrink-0 relative">
-                      {track.artwork ? (
+                      {track.artwork && track.artwork.trim() !== '' ? (
                         <img
                           src={track.artwork}
                           alt={track.title}

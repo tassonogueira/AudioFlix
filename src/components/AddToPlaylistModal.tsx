@@ -78,7 +78,7 @@ export default function AddToPlaylistModal({ track, onClose }: AddToPlaylistModa
         {/* Track Card Preview */}
         <div className="bg-slate-950/70 border border-slate-800/80 rounded-2xl p-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
-            {track.artwork ? (
+            {track.artwork && track.artwork.trim() !== '' ? (
               <img
                 src={track.artwork}
                 alt={track.title}

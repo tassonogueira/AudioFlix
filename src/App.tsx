@@ -60,6 +60,10 @@ import AddToPlaylistModal from './components/AddToPlaylistModal.tsx';
 import PlaylistsManagerView from './components/PlaylistsManagerView.tsx';
 import DownloadsHistoryView from './components/DownloadsHistoryView.tsx';
 import MobileQueueDrawer from './components/MobileQueueDrawer.tsx';
+import OfflineBanner from './components/OfflineBanner.tsx';
+import FloatingDownloadBadge from './components/FloatingDownloadBadge.tsx';
+import DownloadQueueDrawer from './components/DownloadQueueDrawer.tsx';
+import { DownloadManagerProvider, useDownloadManager } from './context/DownloadManagerContext.tsx';
 import { PlaylistProvider, usePlaylistContext } from './context/PlaylistContext.tsx';
 import { detectAudioFormat, AudioDetectionResult } from './utils/audioDetector.ts';
 import { transcodeAudio, TargetFormat, BitrateOption } from './utils/audioTranscoder.ts';
@@ -92,14 +96,33 @@ export interface QueueItem {
 export default function App() {
   return (
     <PlaylistProvider>
-      <AudioFlixMain />
+      <AudioFlixWithDownloadManager />
     </PlaylistProvider>
+  );
+}
+
+function AudioFlixWithDownloadManager() {
+  const { addDownloadRecord, showToast } = usePlaylistContext();
+
+  return (
+    <DownloadManagerProvider
+      onDownloadCompleteRecord={addDownloadRecord}
+      showToast={showToast}
+    >
+      <OfflineBanner />
+      <AudioFlixMain />
+      <FloatingDownloadBadge />
+      <DownloadQueueDrawer />
+    </DownloadManagerProvider>
   );
 }
 
 function AudioFlixMain() {
   // Playlist, Favoritas & Downloads Context
   const { modalTrack, closeAddToPlaylistModal, toastMessage, favorites, playlists, downloads } = usePlaylistContext();
+
+  // Gerenciador de Downloads em Segundo Plano & Gaveta
+  const { setIsDrawerOpen, hasActiveDownloads } = useDownloadManager();
 
   // Flash Screen / Splash de Inicialização
   const [showSplash, setShowSplash] = useState<boolean>(true);
@@ -201,7 +224,8 @@ function AudioFlixMain() {
 
     return () => {
       audio.pause();
-      audio.src = '';
+      audio.removeAttribute('src');
+      audio.load();
     };
   }, []);
 
@@ -968,6 +992,19 @@ function AudioFlixMain() {
               </button>
             )}
 
+            {/* Botão de Fila de Downloads em 2º Plano */}
+            <button
+              onClick={() => setIsDrawerOpen(true)}
+              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 hover:border-emerald-500/50 transition flex items-center gap-1.5 text-xs font-semibold cursor-pointer shadow-sm relative"
+              title="Abrir Fila de Downloads e Pasta de Destino"
+            >
+              <Download className="w-4 h-4 text-emerald-400" />
+              <span className="hidden sm:inline">Fila</span>
+              {hasActiveDownloads && (
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping absolute -top-0.5 -right-0.5" />
+              )}
+            </button>
+
             <button
               onClick={() => setIsMenuOpen(true)}
               className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 hover:border-emerald-500/50 transition flex items-center gap-1.5 text-xs font-semibold cursor-pointer shadow-sm"
@@ -1095,6 +1132,22 @@ function AudioFlixMain() {
                       {downloads.length}
                     </span>
                   )}
+                </button>
+
+                <button
+                  onClick={() => {
+                    setIsDrawerOpen(true);
+                    setIsMenuOpen(false);
+                  }}
+                  className="w-full p-3 rounded-xl text-left text-xs font-bold transition flex items-center gap-3 cursor-pointer text-slate-300 hover:bg-slate-900 bg-slate-900/60 border border-slate-850"
+                >
+                  <Download className="w-4 h-4 text-teal-400" />
+                  <div className="flex-1">
+                    <span className="block font-bold">Fila de Downloads & Pasta</span>
+                    <span className="text-[10px] text-slate-400 font-normal">
+                      Progresso em tempo real e escolha da pasta de destino
+                    </span>
+                  </div>
                 </button>
 
                 <button

@@ -27,12 +27,74 @@ import {
   FolderPlus,
   Headphones,
   Heart,
-  ListPlus
+  ListPlus,
+  Folder,
+  FolderCheck
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { PlayerTrack } from './AudioFlixPlayer.tsx';
 import DownloadFullTrackModal, { DownloadTrackInfo } from './DownloadFullTrackModal.tsx';
 import { usePlaylistContext } from '../context/PlaylistContext.tsx';
+import { useDownloadManager } from '../context/DownloadManagerContext.tsx';
+import { useLongPress } from '../utils/useLongPress.ts';
+
+// Componente com Long-Press Inteligente: Clique rápido toca • Pressionar e segurar adiciona à fila
+function TrackLongPressTitle({
+  title,
+  artist,
+  track,
+  albumTitle,
+  albumArtwork,
+  onPlay,
+  addToQueue,
+  showToast
+}: {
+  title: string;
+  artist: string;
+  track: any;
+  albumTitle?: string;
+  albumArtwork?: string;
+  onPlay: () => void;
+  addToQueue: (t: any) => void;
+  showToast?: (msg: string) => void;
+}) {
+  const longPressProps = useLongPress({
+    threshold: 450,
+    onLongPress: () => {
+      addToQueue({
+        id: track.id,
+        title: track.title,
+        artist: track.artist,
+        album: albumTitle || track.album,
+        artwork: albumArtwork || track.artwork,
+        durationSeconds: track.durationSeconds,
+        previewUrl: track.previewUrl,
+        youtubeId: track.youtubeId
+      });
+      if (showToast) {
+        showToast(`🎵 "${track.title}" adicionada à fila de reprodução!`);
+      }
+    },
+    onClick: () => {
+      onPlay();
+    }
+  });
+
+  return (
+    <div
+      {...longPressProps}
+      className="truncate cursor-pointer select-none group/title p-1 -m-1 rounded-lg hover:bg-slate-800/40 transition active:scale-[0.99]"
+      title="Clique para tocar • Pressione e segure para adicionar à fila"
+    >
+      <span className="text-xs sm:text-sm font-semibold text-slate-200 group-hover/title:text-emerald-400 block truncate transition" title={title}>
+        {title}
+      </span>
+      <span className="text-[11px] text-slate-400 block truncate">
+        {artist}
+      </span>
+    </div>
+  );
+}
 
 export interface YouTubeVideoResult {
   id: string;
@@ -155,13 +217,29 @@ export default function YouTubeMusicDownloader({
   const [playingAudioId, setPlayingAudioId] = useState<string | number | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  // Download do Álbum em ZIP
   const [isZippingAlbum, setIsZippingAlbum] = useState(false);
   const [albumZipProgress, setAlbumZipProgress] = useState(0);
   const [downloadSuccessToast, setDownloadSuccessToast] = useState<string | null>(null);
+  const [lastSearchedQuery, setLastSearchedQuery] = useState(initialSearchQuery || '');
 
   // Playlists e Favoritas Context
-  const { isFavorite, toggleFavorite, openAddToPlaylistModal, addToQueue, addDownloadRecord } = usePlaylistContext();
+  const { isFavorite, toggleFavorite, openAddToPlaylistModal, addToQueue, addDownloadRecord, showToast } = usePlaylistContext();
+  const {
+    startSingleTrackDownload,
+    startAlbumZipDownload,
+    startSinglesBatchDownload,
+    setIsDrawerOpen: openDownloadQueue,
+    customFolderName,
+    selectCustomFolder
+  } = useDownloadManager();
+
+  const isShowingResults = searchExecuted && Boolean(
+    artistsList.length > 0 ||
+    albumsList.length > 0 ||
+    songsList.length > 0 ||
+    youtubeVideos.length > 0 ||
+    selectedArtist
+  );
 
   useEffect(() => {
     const audio = new Audio();
@@ -171,7 +249,8 @@ export default function YouTubeMusicDownloader({
 
     return () => {
       audio.pause();
-      audio.src = '';
+      audio.removeAttribute('src');
+      audio.load();
     };
   }, []);
 
@@ -293,6 +372,7 @@ export default function YouTubeMusicDownloader({
 
     setIsSearching(true);
     setSearchExecuted(true);
+    setLastSearchedQuery(term);
     setSelectedArtist(null);
     setSelectedAlbum(null);
     if (audioRef.current) {
@@ -426,12 +506,77 @@ export default function YouTubeMusicDownloader({
     const singlesToDownload = (selectedArtist.standaloneSingles || []).filter(s => selectedSingleIds.has(s.id));
     if (singlesToDownload.length === 0) return;
 
-    setIsZippingSingles(true);
-    setSinglesZipProgress(10);
+    // Dispara download em lote em segundo plano com gerenciador global
+    startSinglesBatchDownload(
+      `${selectedArtist.info.name} - Musicas_Avulsas_e_Singles`,
+      singlesToDownload.map(s => ({
+        title: s.title,
+        artist: s.artist,
+        youtubeId: s.youtubeId,
+        artwork: s.artwork
+      }))
+    );
+  };
 
+  /*
+    setIsZippingSingles(true);
+    setSinglesZipProgress(15);
+
+    const folderName = `${selectedArtist.info.name} - Musicas_Avulsas_e_Singles`;
+    const zipFileName = `${selectedArtist.info.name} - Musicas_Avulsas_e_Singles.zip`;
+
+    // 1. Tenta gerar via endpoint de alta performance /api/zip/download no backend
+    try {
+      setSinglesZipProgress(30);
+      const serverZipResp = await fetch('/api/zip/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          folderName,
+          tracks: singlesToDownload.map(s => ({
+            title: s.title,
+            artist: s.artist,
+            youtubeId: s.youtubeId
+          }))
+        })
+      });
+
+      if (serverZipResp.ok) {
+        setSinglesZipProgress(85);
+        const zipBlob = await serverZipResp.blob();
+        if (zipBlob.size > 200000) {
+          const url = URL.createObjectURL(zipBlob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = zipFileName;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(url), 25000);
+
+          addDownloadRecord({
+            title: `${selectedArtist.info.name} - Músicas Avulsas`,
+            artist: selectedArtist.info.name,
+            type: 'singles_zip',
+            fileSizeStr: `${(zipBlob.size / (1024 * 1024)).toFixed(1)} MB • ZIP`,
+            fileName: zipFileName
+          });
+
+          setSinglesZipProgress(100);
+          setDownloadSuccessToast(`${singlesToDownload.length} músicas avulsas baixadas com sucesso em ZIP!`);
+          setTimeout(() => setDownloadSuccessToast(null), 6000);
+          setIsZippingSingles(false);
+          setSinglesZipProgress(0);
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('[ZIP] Tentando fallback cliente para faixas avulsas:', err);
+    }
+
+    // 2. Fallback de empacotamento cliente com JSZip
     try {
       const zip = new JSZip();
-      const folderName = `${selectedArtist.info.name} - Musicas_Avulsas_e_Singles`;
       const folder = zip.folder(folderName) || zip;
 
       let completed = 0;
@@ -439,22 +584,19 @@ export default function YouTubeMusicDownloader({
         const fileName = `${single.artist} - ${single.title}.mp3`;
 
         try {
-          // Busca o áudio 100% completo pela API interna
           const fullAudioResp = await fetch(
             `/api/music/download-full-track?artist=${encodeURIComponent(single.artist)}&title=${encodeURIComponent(single.title)}`
           );
           if (fullAudioResp.ok) {
             const audioBlob = await fullAudioResp.blob();
-            folder.file(fileName, audioBlob);
-          } else {
-            folder.file(fileName, new Blob([single.title], { type: 'audio/mpeg' }));
+            if (audioBlob.size > 100000) {
+              folder.file(fileName, audioBlob);
+            }
           }
-        } catch {
-          folder.file(fileName, new Blob([single.title], { type: 'audio/mpeg' }));
-        }
+        } catch {}
 
         completed++;
-        setSinglesZipProgress(Math.round((completed / singlesToDownload.length) * 80) + 10);
+        setSinglesZipProgress(Math.round((completed / singlesToDownload.length) * 60) + 30);
       }
 
       setSinglesZipProgress(95);
@@ -462,7 +604,7 @@ export default function YouTubeMusicDownloader({
       const url = URL.createObjectURL(zipContent);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${selectedArtist.info.name} - Musicas_Avulsas_e_Singles.zip`;
+      a.download = zipFileName;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -472,8 +614,8 @@ export default function YouTubeMusicDownloader({
         title: `${selectedArtist.info.name} - Músicas Avulsas`,
         artist: selectedArtist.info.name,
         type: 'singles_zip',
-        fileSizeStr: `${singlesToDownload.length} faixas • ZIP`,
-        fileName: `${selectedArtist.info.name} - Musicas_Avulsas_e_Singles.zip`
+        fileSizeStr: `${(zipContent.size / (1024 * 1024)).toFixed(1)} MB • ZIP`,
+        fileName: zipFileName
       });
 
       setDownloadSuccessToast(`${singlesToDownload.length} músicas avulsas baixadas com sucesso em ZIP!`);
@@ -486,6 +628,7 @@ export default function YouTubeMusicDownloader({
       setSinglesZipProgress(0);
     }
   };
+  */
 
   // Abrir Detalhes do Álbum com Todas as Faixas Numeradas
   const handleOpenAlbum = async (album: MusicAlbum) => {
@@ -535,7 +678,7 @@ export default function YouTubeMusicDownloader({
     }
   };
 
-  // Download do Álbum Completo em ZIP
+  // Download do Álbum Completo em ZIP em Segundo Plano
   const handleDownloadFullAlbumAsZip = async () => {
     if (!selectedAlbum || selectedAlbum.tracks.length === 0) return;
 
@@ -545,15 +688,83 @@ export default function YouTubeMusicDownloader({
       return;
     }
 
-    setIsZippingAlbum(true);
-    setAlbumZipProgress(5);
+    // Dispara download do álbum ZIP em segundo plano com gerenciador global
+    startAlbumZipDownload({
+      title: selectedAlbum.info.title,
+      artist: selectedAlbum.info.artist,
+      artwork: selectedAlbum.info.artwork,
+      tracks: tracksToDownload.map(t => ({
+        title: t.title,
+        artist: t.artist || selectedAlbum.info.artist,
+        youtubeId: t.youtubeId
+      }))
+    });
+  };
 
+  /*
+    setIsZippingAlbum(true);
+    setAlbumZipProgress(10);
+
+    const folderName = `${selectedAlbum.info.artist} - ${selectedAlbum.info.title} (${selectedAlbum.info.year || 'Álbum'})`;
+    const zipFileName = `${selectedAlbum.info.artist} - ${selectedAlbum.info.title}_[Álbum_Completo].zip`;
+
+    // 1. Tenta gerar via endpoint de alta performance /api/zip/download no backend
+    try {
+      setAlbumZipProgress(30);
+      const serverZipResp = await fetch('/api/zip/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          folderName,
+          tracks: tracksToDownload.map(t => ({
+            title: t.title,
+            artist: t.artist || selectedAlbum.info.artist,
+            youtubeId: t.youtubeId
+          }))
+        })
+      });
+
+      if (serverZipResp.ok) {
+        setAlbumZipProgress(85);
+        const zipBlob = await serverZipResp.blob();
+        if (zipBlob.size > 200000) {
+          const zipUrl = URL.createObjectURL(zipBlob);
+          const a = document.createElement('a');
+          a.href = zipUrl;
+          a.download = zipFileName;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(zipUrl), 30000);
+
+          addDownloadRecord({
+            title: selectedAlbum.info.title,
+            artist: selectedAlbum.info.artist,
+            album: selectedAlbum.info.title,
+            artwork: selectedAlbum.info.artwork,
+            type: 'album_zip',
+            fileSizeStr: `${(zipBlob.size / (1024 * 1024)).toFixed(1)} MB • ZIP`,
+            fileName: zipFileName
+          });
+
+          setAlbumZipProgress(100);
+          setDownloadSuccessToast(`Álbum "${selectedAlbum.info.title}" (${tracksToDownload.length} músicas) baixado com sucesso em ZIP!`);
+          setTimeout(() => setDownloadSuccessToast(null), 7000);
+          setIsZippingAlbum(false);
+          setAlbumZipProgress(0);
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('[ZIP Álbum] Tentando fallback cliente:', err);
+    }
+
+    // 2. Fallback de empacotamento cliente com JSZip
     try {
       const zip = new JSZip();
-      const folderName = `${selectedAlbum.info.artist} - ${selectedAlbum.info.title} (${selectedAlbum.info.year || 'Álbum'})`;
       const albumFolder = zip.folder(folderName) || zip;
 
-      // 1. Tenta adicionar a capa do álbum em alta resolução dentro do ZIP
+      // Adiciona a capa se disponível
       if (selectedAlbum.info.artwork) {
         try {
           const coverResp = await fetch(selectedAlbum.info.artwork);
@@ -561,54 +772,40 @@ export default function YouTubeMusicDownloader({
             const coverBlob = await coverResp.blob();
             albumFolder.file('cover.jpg', coverBlob);
           }
-        } catch {
-          // Ignora se a imagem não carregar por CORS
-        }
+        } catch {}
       }
 
-      // 2. Baixa e empacota cada faixa selecionada
       let completedCount = 0;
       for (const track of tracksToDownload) {
         const trackNumberStr = track.trackNumber < 10 ? `0${track.trackNumber}` : `${track.trackNumber}`;
         const fileName = `${trackNumberStr} - ${track.title}.mp3`;
 
         try {
-          // Busca o áudio 100% completo pela API interna (sem corte de 30s)
           const fullAudioResp = await fetch(
             `/api/music/download-full-track?artist=${encodeURIComponent(track.artist || selectedAlbum.info.artist)}&title=${encodeURIComponent(track.title)}`
           );
           if (fullAudioResp.ok) {
             const audioBlob = await fullAudioResp.blob();
-            albumFolder.file(fileName, audioBlob);
-          } else if (track.previewUrl) {
-            const audioResp = await fetch(track.previewUrl);
-            const audioBlob = await audioResp.blob();
-            albumFolder.file(fileName, audioBlob);
-          } else {
-            albumFolder.file(fileName, new Blob([track.title], { type: 'audio/mpeg' }));
+            if (audioBlob.size > 100000) {
+              albumFolder.file(fileName, audioBlob);
+            }
           }
-        } catch {
-          albumFolder.file(fileName, new Blob([track.title], { type: 'audio/mpeg' }));
-        }
+        } catch {}
 
         completedCount++;
-        setAlbumZipProgress(Math.round((completedCount / tracksToDownload.length) * 80) + 5);
+        setAlbumZipProgress(Math.round((completedCount / tracksToDownload.length) * 60) + 30);
       }
 
-      setAlbumZipProgress(90);
-
-      // 3. Gera o arquivo ZIP com compressão STORE rápida
+      setAlbumZipProgress(95);
       const zipContent = await zip.generateAsync({
         type: 'blob',
         compression: 'STORE'
-      }, (meta) => {
-        setAlbumZipProgress(90 + Math.round(meta.percent * 0.1));
       });
 
       const zipUrl = URL.createObjectURL(zipContent);
       const a = document.createElement('a');
       a.href = zipUrl;
-      a.download = `${selectedAlbum.info.artist} - ${selectedAlbum.info.title}_[Álbum_Completo].zip`;
+      a.download = zipFileName;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -620,8 +817,8 @@ export default function YouTubeMusicDownloader({
         album: selectedAlbum.info.title,
         artwork: selectedAlbum.info.artwork,
         type: 'album_zip',
-        fileSizeStr: `${tracksToDownload.length} faixas • ZIP`,
-        fileName: `${selectedAlbum.info.artist} - ${selectedAlbum.info.title}_[Álbum_Completo].zip`
+        fileSizeStr: `${(zipContent.size / (1024 * 1024)).toFixed(1)} MB • ZIP`,
+        fileName: zipFileName
       });
 
       setDownloadSuccessToast(`Álbum "${selectedAlbum.info.title}" (${tracksToDownload.length} músicas) baixado com sucesso em ZIP!`);
@@ -634,6 +831,7 @@ export default function YouTubeMusicDownloader({
       setAlbumZipProgress(0);
     }
   };
+  */
 
   // Abrir no reprodutor AudioFlix com Segundo Plano e PiP sem abrir abas externas
   const handleOpenYouTubeVideo = (video: YouTubeVideoResult) => {
@@ -673,16 +871,16 @@ export default function YouTubeMusicDownloader({
       <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-sm space-y-4">
         <div className="max-w-3xl mx-auto text-center space-y-2 mb-6">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold">
-            <Youtube className="w-3.5 h-3.5 text-red-500" />
+            <Music className="w-3.5 h-3.5 text-emerald-400" />
             <span>Downloader & Catálogo Musical Inteligente</span>
           </div>
 
           <h2 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-            Busque Músicas, Artistas ou Cole Links do YouTube
+            Busque Músicas e Artistas
           </h2>
 
           <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">
-            Pesquise por nome de artista para ver discografias com capas originais, explore álbuns completos e baixe faixas avulsas ou álbuns inteiros em arquivo ZIP (.mp3).
+            Pesquise por nome de artista ou música para ver discografias oficiais com capas originais e ouvir faixas completas.
           </p>
         </div>
 
@@ -703,67 +901,83 @@ export default function YouTubeMusicDownloader({
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Cole um link do YouTube ou digite Artista, Música ou Álbum..."
-              className="w-full bg-slate-950 border-2 border-slate-800 focus:border-emerald-500 rounded-2xl pl-12 pr-32 py-4 text-sm sm:text-base text-white placeholder-slate-500 focus:outline-none shadow-inner transition"
+              placeholder="Digite Artista, Música ou Álbum..."
+              className={`w-full bg-slate-950 border-2 border-slate-800 focus:border-emerald-500 rounded-2xl pl-12 py-4 text-sm sm:text-base text-white placeholder-slate-500 focus:outline-none shadow-inner transition ${
+                isShowingResults && searchQuery.trim() === lastSearchedQuery.trim() ? 'pr-12' : 'pr-32'
+              }`}
             />
 
             <div className="absolute right-2.5 flex items-center gap-1.5">
               {searchQuery && (
                 <button
                   type="button"
-                  onClick={() => setSearchQuery('')}
-                  className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition"
+                  onClick={() => {
+                    setSearchQuery('');
+                    if (isShowingResults) {
+                      setLastSearchedQuery('');
+                      setSearchExecuted(false);
+                      setArtistsList([]);
+                      setAlbumsList([]);
+                      setSongsList([]);
+                      setYoutubeVideos([]);
+                      setSelectedArtist(null);
+                    }
+                  }}
+                  className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition cursor-pointer"
+                  title="Limpar busca"
                 >
                   <X className="w-4 h-4" />
                 </button>
               )}
 
-              <button
-                type="submit"
-                disabled={isSearching || !searchQuery.trim()}
-                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs sm:text-sm font-bold rounded-xl transition flex items-center gap-2 shadow-md shadow-emerald-950/40"
-              >
-                {isSearching ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Buscando...</span>
-                  </>
-                ) : (
-                  <>
+              {/* Botão Buscar: aparece somente quando NÃO estiver mostrando resultados para o termo digitado */}
+              {(!isShowingResults || searchQuery.trim() !== lastSearchedQuery.trim()) && (
+                <button
+                  type="submit"
+                  disabled={isSearching || !searchQuery.trim()}
+                  className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs sm:text-sm font-bold rounded-xl transition flex items-center gap-2 shadow-md shadow-emerald-950/40 cursor-pointer"
+                >
+                  {isSearching ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Buscando...</span>
+                    </>
+                  ) : (
                     <span>Buscar</span>
-                  </>
-                )}
-              </button>
+                  )}
+                </button>
+              )}
             </div>
           </div>
         </form>
 
-        {/* Sugestões Rápidas de Artistas e Músicas */}
-        <div className="max-w-3xl mx-auto flex items-center justify-center flex-wrap gap-2 pt-2">
-          <span className="text-xs text-slate-500 font-medium">Exemplos rápidos:</span>
-          {[
-            'Jorge & Mateus',
-            'Henrique & Juliano',
-            'Gusttavo Lima',
-            'Marília Mendonça',
-            'Coldplay',
-            'Queen',
-            'Legião Urbana',
-            'Evidências'
-          ].map((tag) => (
+        {/* Evidência do Termo Pesquisado Ativo */}
+        {isShowingResults && lastSearchedQuery && (
+          <div className="max-w-3xl mx-auto flex items-center justify-between gap-3 p-3 bg-emerald-950/40 border border-emerald-500/30 rounded-xl text-xs animate-in fade-in duration-200">
+            <div className="flex items-center gap-2 text-emerald-300 min-w-0">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span className="truncate">
+                Resultados para: <strong className="text-white font-bold font-mono">"{lastSearchedQuery}"</strong>
+              </span>
+            </div>
             <button
-              key={tag}
               type="button"
               onClick={() => {
-                setSearchQuery(tag);
-                handleSearch(tag);
+                setSearchQuery('');
+                setLastSearchedQuery('');
+                setSearchExecuted(false);
+                setArtistsList([]);
+                setAlbumsList([]);
+                setSongsList([]);
+                setYoutubeVideos([]);
+                setSelectedArtist(null);
               }}
-              className="text-[11px] px-2.5 py-1 rounded-lg bg-slate-950/80 hover:bg-slate-800 text-slate-300 border border-slate-800 transition"
+              className="text-[11px] text-emerald-400 hover:text-white underline cursor-pointer shrink-0 font-medium"
             >
-              {tag}
+              Nova busca
             </button>
-          ))}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* SEÇÃO 2: DETALHES DO ÁLBUM SELECIONADO (COM CAPA GRANDE E DOWNLOAD DO ZIP) */}
@@ -785,12 +999,16 @@ export default function YouTubeMusicDownloader({
 
           <div className="flex flex-col md:flex-row items-center md:items-start gap-6">
             {/* Capa em Alta Resolução */}
-            <div className="w-48 h-48 sm:w-56 sm:h-56 rounded-2xl overflow-hidden shadow-2xl border-2 border-slate-700 bg-slate-950 shrink-0 relative group">
-              <img
-                src={selectedAlbum.info.artwork}
-                alt={selectedAlbum.info.title}
-                className="w-full h-full object-cover"
-              />
+            <div className="w-48 h-48 sm:w-56 sm:h-56 rounded-2xl overflow-hidden shadow-2xl border-2 border-slate-700 bg-slate-950 shrink-0 relative group flex items-center justify-center">
+              {selectedAlbum.info.artwork && selectedAlbum.info.artwork.trim() !== '' ? (
+                <img
+                  src={selectedAlbum.info.artwork}
+                  alt={selectedAlbum.info.title}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <Disc className="w-20 h-20 text-slate-700" />
+              )}
               <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-80" />
               <span className="absolute bottom-2.5 left-2.5 px-2 py-0.5 rounded bg-black/60 backdrop-blur text-[10px] text-white font-mono">
                 {selectedAlbum.info.year} • {selectedAlbum.tracks.length} faixas
@@ -832,6 +1050,19 @@ export default function YouTubeMusicDownloader({
                 )}
               </div>
 
+              {/* Indicação e Seleção da Pasta de Destino do Download */}
+              <div className="flex flex-wrap items-center gap-2 text-xs bg-slate-950/70 px-3.5 py-2 rounded-xl border border-slate-800 text-slate-300">
+                <Folder className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>Salvar na pasta: <strong className="text-white font-mono">{customFolderName || 'Downloads padrão'}</strong></span>
+                <button
+                  type="button"
+                  onClick={() => selectCustomFolder()}
+                  className="ml-auto text-emerald-400 hover:text-emerald-300 underline font-semibold cursor-pointer"
+                >
+                  {customFolderName ? 'Alterar pasta' : 'Escolher pasta'}
+                </button>
+              </div>
+
               {/* Botão de Destaque: Baixar Álbum Completo em ZIP */}
               <div className="pt-2 flex flex-col sm:flex-row items-center gap-3">
                 <button
@@ -866,8 +1097,13 @@ export default function YouTubeMusicDownloader({
 
           {/* Lista de Faixas do Álbum */}
           <div className="border border-slate-800 rounded-xl overflow-hidden divide-y divide-slate-800/80 bg-slate-950/50">
-            <div className="p-3 bg-slate-900/80 flex items-center justify-between text-xs text-slate-400 font-semibold uppercase tracking-wider">
-              <span>Faixas do Disco</span>
+            <div className="p-3 bg-slate-900/80 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400 font-semibold uppercase tracking-wider">
+              <div className="flex items-center gap-2">
+                <span>Faixas do Disco</span>
+                <span className="text-[10px] lowercase normal-case px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                  Toque para tocar • Segure para enfileirar
+                </span>
+              </div>
               <span>{selectedAlbumTrackIds.size} de {selectedAlbum.tracks.length} selecionadas</span>
             </div>
 
@@ -882,7 +1118,7 @@ export default function YouTubeMusicDownloader({
                     isSelected ? 'hover:bg-slate-800/30' : 'opacity-40 bg-slate-950/40'
                   }`}
                 >
-                  <div className="flex items-center gap-3 min-w-0">
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
                     <input
                       type="checkbox"
                       checked={isSelected}
@@ -906,14 +1142,16 @@ export default function YouTubeMusicDownloader({
                       {isPlaying ? <Pause className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current ml-0.5" />}
                     </button>
 
-                    <div className="truncate">
-                      <span className="text-xs sm:text-sm font-semibold text-slate-200 block truncate" title={track.title}>
-                        {track.title}
-                      </span>
-                      <span className="text-[11px] text-slate-400 block truncate">
-                        {track.artist}
-                      </span>
-                    </div>
+                    <TrackLongPressTitle
+                      title={track.title}
+                      artist={track.artist}
+                      track={track}
+                      albumTitle={selectedAlbum.info.title}
+                      albumArtwork={selectedAlbum.info.artwork}
+                      onPlay={() => handlePlayTrack(track, selectedAlbum.tracks)}
+                      addToQueue={addToQueue}
+                      showToast={showToast}
+                    />
                   </div>
 
                   <div className="flex items-center gap-2 sm:gap-3 shrink-0">
@@ -1084,12 +1322,16 @@ export default function YouTubeMusicDownloader({
                       className="bg-slate-950/70 border border-slate-800 hover:border-amber-500/50 rounded-xl p-4 cursor-pointer group transition flex flex-col justify-between hover:shadow-xl space-y-3"
                     >
                       <div className="flex gap-3.5">
-                        <div className="w-24 h-24 rounded-lg overflow-hidden bg-slate-900 shrink-0 relative group-hover:scale-105 transition duration-300 border border-slate-800">
-                          <img
-                            src={album.artwork}
-                            alt={album.title}
-                            className="w-full h-full object-cover"
-                          />
+                        <div className="w-24 h-24 rounded-lg overflow-hidden bg-slate-900 shrink-0 relative group-hover:scale-105 transition duration-300 border border-slate-800 flex items-center justify-center">
+                          {album.artwork && album.artwork.trim() !== '' ? (
+                            <img
+                              src={album.artwork}
+                              alt={album.title}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <Disc className="w-10 h-10 text-slate-700" />
+                          )}
                         </div>
 
                         <div className="flex-1 min-w-0 space-y-1">
@@ -1167,14 +1409,17 @@ export default function YouTubeMusicDownloader({
                       className="bg-slate-950/70 border border-slate-800 hover:border-emerald-500/50 rounded-xl p-4 cursor-pointer group transition flex flex-col justify-between hover:shadow-xl space-y-3"
                     >
                       <div className="flex gap-3.5">
-                        <div className="w-24 h-24 rounded-lg overflow-hidden bg-slate-900 shrink-0 relative group-hover:scale-105 transition duration-300 border border-slate-800">
-                          <img
-                            src={album.artwork}
-                            alt={album.title}
-                            className="w-full h-full object-cover"
-                          />
+                        <div className="w-24 h-24 rounded-lg overflow-hidden bg-slate-900 shrink-0 relative group-hover:scale-105 transition duration-300 border border-slate-800 flex items-center justify-center">
+                          {album.artwork && album.artwork.trim() !== '' ? (
+                            <img
+                              src={album.artwork}
+                              alt={album.title}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <Disc className="w-10 h-10 text-slate-700" />
+                          )}
                         </div>
-
                         <div className="flex-1 min-w-0 space-y-1">
                           <span className="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                             Álbum de Estúdio
@@ -1250,14 +1495,17 @@ export default function YouTubeMusicDownloader({
                       className="bg-slate-950/70 border border-slate-800 hover:border-blue-500/50 rounded-xl p-4 cursor-pointer group transition flex flex-col justify-between hover:shadow-xl space-y-3"
                     >
                       <div className="flex gap-3.5">
-                        <div className="w-24 h-24 rounded-lg overflow-hidden bg-slate-900 shrink-0 relative group-hover:scale-105 transition duration-300 border border-slate-800">
-                          <img
-                            src={album.artwork}
-                            alt={album.title}
-                            className="w-full h-full object-cover"
-                          />
+                        <div className="w-24 h-24 rounded-lg overflow-hidden bg-slate-900 shrink-0 relative group-hover:scale-105 transition duration-300 border border-slate-800 flex items-center justify-center">
+                          {album.artwork && album.artwork.trim() !== '' ? (
+                            <img
+                              src={album.artwork}
+                              alt={album.title}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <Disc className="w-10 h-10 text-slate-700" />
+                          )}
                         </div>
-
                         <div className="flex-1 min-w-0 space-y-1">
                           <span className="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-blue-500/20 text-blue-300 border border-blue-500/30">
                             {album.categoryLabel || 'EP & Especial'}
@@ -1352,11 +1600,17 @@ export default function YouTubeMusicDownloader({
                             className="rounded text-purple-500 focus:ring-purple-500/20 bg-slate-900 border-slate-700 cursor-pointer shrink-0"
                           />
 
-                          <img
-                            src={single.artwork}
-                            alt={single.title}
-                            className="w-12 h-12 rounded-lg object-cover bg-slate-800 shrink-0 border border-slate-800"
-                          />
+                          {single.artwork && single.artwork.trim() !== '' ? (
+                            <img
+                              src={single.artwork}
+                              alt={single.title}
+                              className="w-12 h-12 rounded-lg object-cover bg-slate-800 shrink-0 border border-slate-800"
+                            />
+                          ) : (
+                            <div className="w-12 h-12 rounded-lg bg-slate-800 shrink-0 border border-slate-800 flex items-center justify-center text-slate-500">
+                              <Music className="w-6 h-6" />
+                            </div>
+                          )}
 
                           <div className="truncate">
                             <span className="text-xs font-bold text-slate-200 block truncate" title={single.title}>
@@ -1467,11 +1721,17 @@ export default function YouTubeMusicDownloader({
                       className="p-3 bg-slate-950/60 border border-slate-800 rounded-xl flex items-center justify-between gap-3 hover:border-slate-700 transition"
                     >
                       <div className="flex items-center gap-2.5 min-w-0">
-                        <img
-                          src={track.artwork}
-                          alt={track.title}
-                          className="w-10 h-10 rounded-lg object-cover bg-slate-800 shrink-0"
-                        />
+                        {track.artwork && track.artwork.trim() !== '' ? (
+                          <img
+                            src={track.artwork}
+                            alt={track.title}
+                            className="w-10 h-10 rounded-lg object-cover bg-slate-800 shrink-0"
+                          />
+                        ) : (
+                          <div className="w-10 h-10 rounded-lg bg-slate-800 shrink-0 flex items-center justify-center text-slate-500">
+                            <Music className="w-5 h-5" />
+                          </div>
+                        )}
                         <div className="truncate">
                           <span className="text-xs font-semibold text-slate-200 block truncate">
                             {track.title}
@@ -1608,12 +1868,16 @@ export default function YouTubeMusicDownloader({
                   >
                     <div>
                       {/* Thumbnail com tempo de duração */}
-                      <div className="aspect-video relative overflow-hidden bg-slate-900">
-                        <img
-                          src={video.thumbnail}
-                          alt={video.title}
-                          className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
-                        />
+                      <div className="aspect-video relative overflow-hidden bg-slate-900 flex items-center justify-center">
+                        {video.thumbnail && video.thumbnail.trim() !== '' ? (
+                          <img
+                            src={video.thumbnail}
+                            alt={video.title}
+                            className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
+                          />
+                        ) : (
+                          <Youtube className="w-10 h-10 text-slate-700" />
+                        )}
                         <div className="absolute bottom-2 right-2 px-1.5 py-0.5 rounded bg-black/80 text-[11px] font-mono text-white font-semibold">
                           {video.duration}
                         </div>
@@ -1775,12 +2039,16 @@ export default function YouTubeMusicDownloader({
                     className="bg-slate-950/70 border border-slate-800 hover:border-emerald-500/60 rounded-xl p-3 cursor-pointer group transition flex flex-col justify-between"
                   >
                     <div className="space-y-2">
-                      <div className="aspect-square rounded-lg overflow-hidden bg-slate-800 relative">
-                        <img
-                          src={album.artwork}
-                          alt={album.title}
-                          className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
-                        />
+                      <div className="aspect-square rounded-lg overflow-hidden bg-slate-800 relative flex items-center justify-center">
+                        {album.artwork && album.artwork.trim() !== '' ? (
+                          <img
+                            src={album.artwork}
+                            alt={album.title}
+                            className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
+                          />
+                        ) : (
+                          <Disc className="w-12 h-12 text-slate-600" />
+                        )}
                       </div>
 
                       <div>
@@ -1827,11 +2095,17 @@ export default function YouTubeMusicDownloader({
                       className="p-3 flex items-center justify-between gap-3 hover:bg-slate-800/30 transition"
                     >
                       <div className="flex items-center gap-3 min-w-0">
-                        <img
-                          src={song.artwork}
-                          alt={song.title}
-                          className="w-11 h-11 rounded-lg object-cover bg-slate-800 shrink-0"
-                        />
+                        {song.artwork && song.artwork.trim() !== '' ? (
+                          <img
+                            src={song.artwork}
+                            alt={song.title}
+                            className="w-11 h-11 rounded-lg object-cover bg-slate-800 shrink-0"
+                          />
+                        ) : (
+                          <div className="w-11 h-11 rounded-lg bg-slate-800 shrink-0 flex items-center justify-center text-slate-600">
+                            <Music className="w-5 h-5" />
+                          </div>
+                        )}
 
                         <button
                           onClick={() => handlePlayTrack(song, songsList)}
@@ -1849,14 +2123,16 @@ export default function YouTubeMusicDownloader({
                           )}
                         </button>
 
-                        <div className="truncate">
-                          <span className="text-xs sm:text-sm font-semibold text-slate-200 block truncate" title={song.title}>
-                            {song.title}
-                          </span>
-                          <span className="text-[11px] text-slate-400 block truncate">
-                            {song.artist} • <span className="text-slate-500">{song.album}</span>
-                          </span>
-                        </div>
+                        <TrackLongPressTitle
+                          title={song.title}
+                          artist={`${song.artist}${song.album ? ` • ${song.album}` : ''}`}
+                          track={song}
+                          albumTitle={song.album}
+                          albumArtwork={song.artwork}
+                          onPlay={() => handlePlayTrack(song, songsList)}
+                          addToQueue={addToQueue}
+                          showToast={showToast}
+                        />
                       </div>
 
                       <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">

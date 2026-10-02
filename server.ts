@@ -4,6 +4,7 @@ import fs from 'fs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import yts from 'yt-search';
+import JSZip from 'jszip';
 import {
   classifyReleases,
   JORGE_E_MATEUS_CANONICAL,
@@ -12,6 +13,11 @@ import {
 
 const execFilePromise = promisify(execFile);
 const ytDlpPath = path.resolve(process.cwd(), 'bin/yt-dlp');
+try {
+  if (fs.existsSync(ytDlpPath)) {
+    fs.chmodSync(ytDlpPath, 0o755);
+  }
+} catch {}
 
 const app = express();
 const PORT = 3000;
@@ -86,9 +92,9 @@ app.get('/api/youtube/search', async (req, res) => {
       }
     }
 
-    // Busca geral no YouTube
+    // Busca geral no YouTube com ordenação inteligente priorizando versões oficiais
     const searchResults = await yts(query);
-    const videos = (searchResults.videos || []).slice(0, 24).map(v => ({
+    const videos = (searchResults.videos || []).map(v => ({
       id: v.videoId,
       title: v.title,
       url: v.url,
@@ -99,7 +105,19 @@ app.get('/api/youtube/search', async (req, res) => {
       image: v.image || `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
       views: v.views || 0,
       ago: v.ago || ''
-    }));
+    })).sort((a, b) => {
+      const getScore = (v: any) => {
+        let score = 0;
+        const t = (v.title || '').toLowerCase();
+        const aut = (v.author || '').toLowerCase();
+        if (t.includes('oficial') || t.includes('official')) score += 35;
+        if (t.includes('áudio oficial') || t.includes('audio oficial') || t.includes('clipe oficial') || t.includes('official video') || t.includes('official audio')) score += 45;
+        if (aut.includes('vevo') || aut.includes('topic') || aut.includes('oficial') || aut.includes('official')) score += 30;
+        if (t.includes('cover') || t.includes('karaoke') || t.includes('karaokê') || t.includes('reaction') || t.includes('speed up') || t.includes('slowed') || t.includes('nightcore') || t.includes('paródia')) score -= 60;
+        return score;
+      };
+      return getScore(b) - getScore(a);
+    }).slice(0, 24);
 
     res.json({
       isDirectLink: false,
@@ -157,24 +175,144 @@ function getCacheKey(artist?: string, title?: string, videoId?: string): string 
   return raw.substring(0, 80) || `track_${Date.now()}`;
 }
 
+const norm = (s: string) => (s || '').toLowerCase().replace(/&/g, 'e').replace(/[^a-z0-9]/g, '');
+
 // Helper universal de alta fidelidade para baixar áudio 100% completo como MP3
-// Waterfall: 1) Cache local 2) YouTube direto 3) SoundCloud search 4) YouTube query fallback
+// Waterfall Inteligente: 1) Cache local 2) SoundCloud Resiliente com queries limpas 3) YouTube Direto 4) YouTube Alternativo
+function cleanMusicTitle(raw: string): string {
+  return (raw || '')
+    .replace(/\[(?:Clipe Oficial|Áudio Oficial|Vídeo Oficial|Official Video|Official Audio|DVD Ao Vivo|Ao Vivo|Live|Audio Oficial|Vídeo|Clipe).*?\]/gi, '')
+    .replace(/\((?:Clipe Oficial|Áudio Oficial|Vídeo Oficial|Official Video|Official Audio|DVD Ao Vivo|Ao Vivo|Live|Audio Oficial|Vídeo|Clipe).*?\)/gi, '')
+    .replace(/\b(?:HD|4K|1080p|720p)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractCleanArtistAndSong(title: string, artist: string): { cleanArtist: string; cleanSong: string; queries: string[] } {
+  let cleanArtist = (artist || '').trim()
+    .replace(/\s*(?:Oficial|Official|VEVO|- Topic|Topic|Canal)\s*$/i, '')
+    .trim();
+    
+  let cleanTitle = cleanMusicTitle(title || '');
+  
+  if (cleanTitle.includes(' - ')) {
+    const parts = cleanTitle.split(' - ').map(p => p.trim());
+    const firstPart = parts[0];
+    const rest = parts.slice(1).join(' - ');
+    if (!cleanArtist || norm(firstPart) === norm(cleanArtist) || norm(firstPart).includes(norm(cleanArtist)) || norm(cleanArtist).includes(norm(firstPart))) {
+      cleanArtist = cleanArtist || firstPart;
+      cleanTitle = rest;
+    }
+  }
+
+  // Remove sufixos de álbum e localizações ao vivo
+  cleanTitle = cleanTitle
+    .replace(/\s*-\s*(?:Ao Vivo|Terra Sem CEP|Como Sempre Feito Nunca|O Céu Explica Tudo|Aí Já Era|Na Medida Do Impossível|Ao Vivo em.*?|EP.*?|Single.*?)\s*$/i, '')
+    .replace(/\[.*?\]/g, '')
+    .replace(/\(.*?\)/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const cleanSong = cleanTitle || 'Musica';
+  const normArtist = cleanArtist.replace(/&/g, 'e').replace(/\s+/g, ' ').trim();
+  const altArtist = cleanArtist.replace(/\be\b/gi, '&').replace(/\s+/g, ' ').trim();
+
+  const queries = new Set<string>();
+  if (cleanArtist && cleanSong) {
+    queries.add(`${normArtist} ${cleanSong}`);
+    queries.add(`${cleanArtist} ${cleanSong}`);
+    if (altArtist !== cleanArtist) queries.add(`${altArtist} ${cleanSong}`);
+    queries.add(`${cleanSong} ${normArtist}`);
+  }
+  if (cleanSong && cleanSong.length > 3) {
+    queries.add(cleanSong);
+  }
+  const fullTitle = cleanMusicTitle(title || '');
+  if (fullTitle && fullTitle !== cleanSong) {
+    queries.add(fullTitle);
+  }
+
+  return { cleanArtist, cleanSong, queries: Array.from(queries) };
+}
+
+async function runDownloadAttempt(
+  args: string[],
+  target: string,
+  finalMp3: string,
+  tempBase: string,
+  timeoutMs = 40000
+): Promise<boolean> {
+  try {
+    await execFilePromise(ytDlpPath, [...args, target], { timeout: timeoutMs });
+  } catch {
+    // Código 101 de --max-downloads ou avisos não fatais são tratados verificando os arquivos abaixo
+  }
+
+  // 1. Verifica se o MP3 final foi gerado
+  if (fs.existsSync(finalMp3)) {
+    try {
+      const stat = fs.statSync(finalMp3);
+      if (stat.size > 150000) {
+        return true;
+      }
+    } catch {}
+  }
+
+  // 2. Verifica se o áudio intermediário (.m4a, .webm, etc.) foi baixado e converte via ffmpeg
+  const candidateExts = ['.m4a', '.webm', '.opus', '.aac', '.ogg', '.flac', '.mp4'];
+  for (const ext of candidateExts) {
+    const candidate = `${tempBase}${ext}`;
+    if (fs.existsSync(candidate)) {
+      try {
+        const stat = fs.statSync(candidate);
+        if (stat.size > 150000) {
+          await execFilePromise('ffmpeg', ['-y', '-i', candidate, '-vn', '-ab', '192k', finalMp3], { timeout: 20000 });
+          if (fs.existsSync(finalMp3) && fs.statSync(finalMp3).size > 150000) {
+            try { fs.unlinkSync(candidate); } catch {}
+            return true;
+          }
+        }
+      } catch {}
+    }
+  }
+
+  return false;
+}
+
 async function downloadFullTrackAsMp3(
   title: string,
   artist: string,
   videoId?: string
 ): Promise<{ filePath: string; safeFilename: string; size: number }> {
-  const cleanTitle = (title || 'Faixa').trim();
-  const cleanArtist = (artist || '').trim();
-  const safeFilename = `${cleanArtist ? `${cleanArtist} - ` : ''}${cleanTitle}`
+  let initialTitle = (title || '').trim();
+  let initialArtist = (artist || '').trim();
+
+  // Se o título for genérico ou artista estiver vazio e tivermos o videoId, resolve metadados reais via yt-search
+  if (videoId && (!initialArtist || !initialTitle || initialTitle.startsWith('Faixa_') || initialTitle === 'Faixa')) {
+    try {
+      const info = await yts({ videoId });
+      if (info) {
+        if (!initialTitle || initialTitle.startsWith('Faixa_') || initialTitle === 'Faixa') {
+          initialTitle = info.title || initialTitle;
+        }
+        if (!initialArtist) {
+          initialArtist = info.author?.name || '';
+        }
+      }
+    } catch {}
+  }
+
+  const { cleanArtist, cleanSong, queries } = extractCleanArtistAndSong(initialTitle, initialArtist);
+
+  const safeFilename = `${cleanArtist ? `${cleanArtist} - ` : ''}${cleanSong}`
     .replace(/[\/\\?%*:|"<>]/g, '_')
     .replace(/\s+/g, ' ')
     .trim() || `musica_${Date.now()}`;
 
-  const cacheKey = getCacheKey(cleanArtist, cleanTitle, videoId);
+  const cacheKey = getCacheKey(cleanArtist, cleanSong, videoId);
   const cachedFilePath = path.join(CACHE_DIR, `${cacheKey}.mp3`);
 
-  // 1. Verifica se já existe em cache
+  // 1. Verifica se já existe em cache local
   if (fs.existsSync(cachedFilePath)) {
     try {
       const stat = fs.statSync(cachedFilePath);
@@ -188,57 +326,87 @@ async function downloadFullTrackAsMp3(
   const outPattern = `${tempBase}.%(ext)s`;
   const finalMp3 = `${tempBase}.mp3`;
 
-  // Lista de estratégias de download em cascata (resiliente a bloqueios de IP de datacenter)
-  const strategies: Array<{ name: string; target: string }> = [];
+  const commonArgs = [
+    '-x',
+    '--audio-format', 'mp3',
+    '--audio-quality', '0',
+    '--no-playlist',
+    '--no-warnings',
+    '--ignore-errors',
+    '-o', outPattern
+  ];
 
-  if (videoId) {
-    strategies.push({ name: 'YouTube Direct VideoID', target: `https://www.youtube.com/watch?v=${videoId}` });
-  }
-  if (cleanArtist || cleanTitle) {
-    const query = `${cleanArtist} ${cleanTitle}`.trim();
-    // SoundCloud é extremamente rápido, sem bloqueio de IP de datacenter, com faixa completa
-    strategies.push({ name: 'SoundCloud Search', target: `scsearch1:${query}` });
-    strategies.push({ name: 'YouTube Audio Search', target: `ytsearch1:${query} áudio oficial` });
-    strategies.push({ name: 'YouTube Fallback Search', target: `ytsearch1:${query}` });
-  }
+  // Estratégia 1: Busca no SoundCloud com queries limpas e tolerância a DRM (--max-downloads 1)
+  for (const q of queries) {
+    if (!q || q.length < 2) continue;
+    console.log(`[Download Engine] Tentando SoundCloud: ${q}`);
+    const ok = await runDownloadAttempt(
+      [...commonArgs, '--max-downloads', '1'],
+      `scsearch5:${q}`,
+      finalMp3,
+      tempBase,
+      35000
+    );
 
-  let lastError: any = null;
-
-  for (const strat of strategies) {
-    try {
-      console.log(`[Download Engine] Tentando estratégia: ${strat.name} -> ${strat.target}`);
-      await execFilePromise(ytDlpPath, [
-        '-x',
-        '--audio-format', 'mp3',
-        '--audio-quality', '0',
-        '--no-playlist',
-        '--no-warnings',
-        '-o', outPattern,
-        strat.target
-      ], { timeout: 45000 });
-
-      if (fs.existsSync(finalMp3)) {
-        const stat = fs.statSync(finalMp3);
-        if (stat.size > 150000) {
-          console.log(`[Download Engine] Sucesso com ${strat.name}! Tamanho: ${(stat.size / (1024 * 1024)).toFixed(2)} MB`);
-          // Salva no cache para acessos futuros instantâneos
-          try {
-            fs.copyFileSync(finalMp3, cachedFilePath);
-          } catch {}
-          return { filePath: finalMp3, safeFilename, size: stat.size };
-        }
-      }
-    } catch (err: any) {
-      console.warn(`[Download Engine] Falha na estratégia ${strat.name}:`, err.message?.substring(0, 120));
-      lastError = err;
-      // Limpa sobras temporárias antes da próxima tentativa
-      try {
-        if (fs.existsSync(finalMp3)) fs.unlinkSync(finalMp3);
-      } catch {}
+    if (ok) {
+      const stat = fs.statSync(finalMp3);
+      console.log(`[Download Engine] Sucesso com SoundCloud! Tamanho: ${(stat.size / (1024 * 1024)).toFixed(2)} MB`);
+      try { fs.copyFileSync(finalMp3, cachedFilePath); } catch {}
+      return { filePath: finalMp3, safeFilename, size: stat.size };
     }
   }
 
-  throw new Error(`Não foi possível baixar o MP3 completo da faixa (${cleanArtist} - ${cleanTitle}). Motivo: ${lastError?.message || 'Servidores de streaming indisponíveis no momento.'}`);
+  // Estratégia 2: Se temos videoId direto do YouTube, tenta baixar direto
+  if (videoId) {
+    console.log(`[Download Engine] Tentando YouTube Direct VideoID: ${videoId}`);
+    const ok = await runDownloadAttempt(
+      [...commonArgs, '--extractor-args', 'youtube:player_client=android,web,tv'],
+      `https://www.youtube.com/watch?v=${videoId}`,
+      finalMp3,
+      tempBase,
+      35000
+    );
+
+    if (ok) {
+      const stat = fs.statSync(finalMp3);
+      console.log(`[Download Engine] Sucesso com YouTube Direct! Tamanho: ${(stat.size / (1024 * 1024)).toFixed(2)} MB`);
+      try { fs.copyFileSync(finalMp3, cachedFilePath); } catch {}
+      return { filePath: finalMp3, safeFilename, size: stat.size };
+    }
+  }
+
+  // Estratégia 3: Buscar alternativas no YouTube via yt-search (sem bloqueio) e tentar os IDs
+  if (queries.length > 0) {
+    try {
+      const ytQuery = `${cleanArtist} ${cleanSong}`.trim();
+      console.log(`[Download Engine] Buscando alternativas no YouTube via yt-search: ${ytQuery}`);
+      const searchRes = await yts(ytQuery);
+      const candidates = (searchRes.videos || []).slice(0, 3).map(v => v.videoId).filter(id => id && id !== videoId);
+      for (const altId of candidates) {
+        console.log(`[Download Engine] Tentando YouTube Alternativo VideoID: ${altId}`);
+        const ok = await runDownloadAttempt(
+          [...commonArgs, '--extractor-args', 'youtube:player_client=android,web,tv'],
+          `https://www.youtube.com/watch?v=${altId}`,
+          finalMp3,
+          tempBase,
+          30000
+        );
+        if (ok) {
+          const stat = fs.statSync(finalMp3);
+          console.log(`[Download Engine] Sucesso com YouTube Alternativo! Tamanho: ${(stat.size / (1024 * 1024)).toFixed(2)} MB`);
+          try { fs.copyFileSync(finalMp3, cachedFilePath); } catch {}
+          return { filePath: finalMp3, safeFilename, size: stat.size };
+        }
+      }
+    } catch {}
+  }
+
+  // Limpa arquivos residuais se tudo falhar
+  try {
+    if (fs.existsSync(finalMp3)) fs.unlinkSync(finalMp3);
+  } catch {}
+
+  throw new Error(`Não foi possível baixar o MP3 completo da faixa (${cleanArtist} - ${cleanSong}). Servidores de streaming temporariamente ocupados.`);
 }
 
 // 2.1 Rota de Download Direto de Áudio / MP3 100% Completo (Sem corte de 30s e sem redirecionar)
@@ -326,6 +494,61 @@ app.get('/api/music/download-full-track', async (req, res) => {
       error: 'Erro ao gerar MP3 completo da faixa',
       details: error.message
     });
+  }
+});
+
+// 2.2.1 Rota de Download de Pacote ZIP de Músicas / Álbuns Completos
+app.post('/api/zip/download', async (req, res) => {
+  try {
+    const { folderName, tracks } = req.body;
+    if (!tracks || !Array.isArray(tracks) || tracks.length === 0) {
+      return res.status(400).json({ error: 'Nenhuma faixa informada para o ZIP' });
+    }
+
+    const safeZipName = (folderName || 'Musicas_AudioFlix')
+      .replace(/[\/\\?%*:|"<>]/g, '_')
+      .trim();
+
+    const zip = new JSZip();
+    const folder = zip.folder(safeZipName) || zip;
+
+    // Processa faixas em lotes paralelos de 6 para acelerar significativamente o download do ZIP
+    const BATCH_SIZE = 6;
+    for (let i = 0; i < tracks.length; i += BATCH_SIZE) {
+      const batch = tracks.slice(i, i + BATCH_SIZE);
+      await Promise.all(
+        batch.map(async (t: any, idx: number) => {
+          const trackNumber = i + idx + 1;
+          const trackNumStr = trackNumber < 10 ? `0${trackNumber}` : `${trackNumber}`;
+          const safeFilename = `${trackNumStr} - ${t.artist ? `${t.artist} - ` : ''}${t.title || 'Faixa'}.mp3`
+            .replace(/[\/\\?%*:|"<>]/g, '_')
+            .replace(/\s+/g, ' ');
+
+          try {
+            const { filePath } = await downloadFullTrackAsMp3(t.title, t.artist || '', t.youtubeId);
+            if (fs.existsSync(filePath)) {
+              const fileData = fs.readFileSync(filePath);
+              folder.file(safeFilename, fileData);
+            }
+          } catch (err) {
+            console.warn(`[ZIP Engine] Falha ao empacotar ${t.title}:`, err);
+          }
+        })
+      );
+    }
+
+    const zipBuffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'STORE' });
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${encodeURIComponent(safeZipName)}.zip"; filename*=UTF-8''${encodeURIComponent(safeZipName)}.zip`
+    );
+    res.setHeader('Content-Length', zipBuffer.length);
+    res.end(zipBuffer);
+  } catch (error: any) {
+    console.error('Erro na rota /api/zip/download:', error);
+    res.status(500).json({ error: 'Falha ao processar arquivo ZIP', details: error.message });
   }
 });
 

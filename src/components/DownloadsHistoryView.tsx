@@ -7,6 +7,7 @@ import {
   Archive,
   CheckCircle2,
   FolderCheck,
+  Folder,
   Search,
   ArrowRight,
   Music,
@@ -16,6 +17,7 @@ import {
   HardDrive
 } from 'lucide-react';
 import { usePlaylistContext, DownloadHistoryItem } from '../context/PlaylistContext.tsx';
+import { useDownloadManager } from '../context/DownloadManagerContext.tsx';
 import { PlayerTrack } from './AudioFlixPlayer.tsx';
 
 interface DownloadsHistoryViewProps {
@@ -28,10 +30,21 @@ export default function DownloadsHistoryView({
   onExploreSongs
 }: DownloadsHistoryViewProps) {
   const { downloads, removeDownloadRecord, clearDownloadHistory, showToast } = usePlaylistContext();
+  const {
+    customFolderName,
+    selectCustomFolder,
+    clearCustomFolder,
+    setIsDrawerOpen,
+    activeDownloads
+  } = useDownloadManager();
 
   const [searchFilter, setSearchFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState<'all' | 'single_mp3' | 'zip'>('all');
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+
+  const activeCount = activeDownloads.filter(
+    (t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'processing'
+  ).length;
 
   const filteredDownloads = downloads.filter((item) => {
     const matchesSearch =
@@ -73,6 +86,10 @@ export default function DownloadsHistoryView({
       }
 
       const blob = await response.blob();
+      if (blob.size < 200000 || blob.type.includes('json') || blob.type.includes('html')) {
+        throw new Error('Arquivo de áudio indisponível no momento');
+      }
+
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -83,17 +100,9 @@ export default function DownloadsHistoryView({
       setTimeout(() => URL.revokeObjectURL(url), 20000);
 
       showToast(`Download de "${item.title}" iniciado no seu dispositivo!`);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Erro ao baixar novamente:', err);
-      // Fallback direto
-      const directUrl = `/api/music/download-full-track?title=${encodeURIComponent(item.title)}&artist=${encodeURIComponent(item.artist)}&youtubeId=${encodeURIComponent(item.youtubeId || '')}`;
-      const link = document.createElement('a');
-      link.href = directUrl;
-      link.download = item.fileName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      showToast(`Download iniciado no seu dispositivo.`);
+      showToast(err.message || 'Falha ao baixar novamente. Tente em alguns instantes.');
     } finally {
       setDownloadingId(null);
     }
@@ -121,15 +130,60 @@ export default function DownloadsHistoryView({
           </div>
 
           {downloads.length > 0 && (
-            <button
-              onClick={clearDownloadHistory}
-              className="self-start sm:self-auto px-3 py-1.5 bg-slate-950 hover:bg-rose-950/40 text-slate-400 hover:text-rose-300 border border-slate-800 hover:border-rose-800/40 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer"
-              title="Limpar lista do histórico"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Limpar Histórico</span>
-            </button>
+            <div className="flex items-center gap-2 self-start sm:self-auto">
+              <button
+                onClick={() => setIsDrawerOpen(true)}
+                className="px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer"
+                title="Abrir fila de downloads em segundo plano"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Fila de Downloads {activeCount > 0 ? `(${activeCount})` : ''}</span>
+              </button>
+
+              <button
+                onClick={clearDownloadHistory}
+                className="px-3 py-1.5 bg-slate-950 hover:bg-rose-950/40 text-slate-400 hover:text-rose-300 border border-slate-800 hover:border-rose-800/40 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer"
+                title="Limpar lista do histórico"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Limpar Histórico</span>
+              </button>
+            </div>
           )}
+        </div>
+
+        {/* Card de Configuração da Pasta de Destino (Pendrive / Pasta Específica) */}
+        <div className="p-3.5 bg-slate-950/80 border border-slate-800 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-center text-emerald-400 shrink-0">
+              {customFolderName ? <FolderCheck className="w-5 h-5 text-emerald-400" /> : <Folder className="w-5 h-5 text-slate-400" />}
+            </div>
+            <div>
+              <span className="text-xs font-bold text-white block">
+                Destino dos Downloads: {customFolderName ? <span className="text-emerald-400 font-mono font-medium">📁 {customFolderName}</span> : 'Pasta padrão "Downloads"'}
+              </span>
+              <span className="text-[11px] text-slate-400 block">
+                {customFolderName ? 'Seus arquivos baixados são direcionados automaticamente para esta pasta.' : 'Você pode escolher um Pendrive ou pasta específica do seu computador ou celular.'}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {customFolderName && (
+              <button
+                onClick={clearCustomFolder}
+                className="px-2.5 py-1 text-[11px] text-rose-400 hover:bg-rose-950/30 rounded-lg transition cursor-pointer"
+              >
+                Restaurar padrão
+              </button>
+            )}
+            <button
+              onClick={selectCustomFolder}
+              className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-md transition cursor-pointer shrink-0"
+            >
+              {customFolderName ? 'Alterar Pasta' : 'Escolher Pasta / Pendrive'}
+            </button>
+          </div>
         </div>
 
         <p className="text-xs sm:text-sm text-slate-400 leading-relaxed max-w-3xl">
@@ -221,7 +275,7 @@ export default function DownloadsHistoryView({
                 <div className="flex items-center gap-3.5 min-w-0 flex-1">
                   {/* Capa ou Ícone */}
                   <div className="w-12 h-12 rounded-xl overflow-hidden bg-slate-950 border border-slate-800 shrink-0 relative flex items-center justify-center">
-                    {item.artwork ? (
+                    {item.artwork && item.artwork.trim() !== '' ? (
                       <img
                         src={item.artwork}
                         alt={item.title}

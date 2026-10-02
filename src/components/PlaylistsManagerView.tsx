@@ -331,7 +331,7 @@ export default function PlaylistsManagerView({
                         {idx + 1}
                       </span>
 
-                      {track.artwork ? (
+                      {track.artwork && track.artwork.trim() !== '' ? (
                         <img
                           src={track.artwork}
                           alt={track.title}
@@ -411,7 +411,7 @@ export default function PlaylistsManagerView({
                     }`}
                   >
                     <div className="flex items-center gap-3 min-w-0">
-                      {pl.coverUrl ? (
+                      {pl.coverUrl && pl.coverUrl.trim() !== '' ? (
                         <img
                           src={pl.coverUrl}
                           alt={pl.name}
@@ -462,7 +462,7 @@ export default function PlaylistsManagerView({
                 {/* Header da Playlist Selecionada */}
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-slate-800">
                   <div className="flex items-center gap-4">
-                    {selectedPlaylist.coverUrl ? (
+                    {selectedPlaylist.coverUrl && selectedPlaylist.coverUrl.trim() !== '' ? (
                       <img
                         src={selectedPlaylist.coverUrl}
                         alt={selectedPlaylist.name}
@@ -583,7 +583,7 @@ export default function PlaylistsManagerView({
                             {idx + 1}
                           </span>
 
-                          {track.artwork ? (
+                          {track.artwork && track.artwork.trim() !== '' ? (
                             <img
                               src={track.artwork}
                               alt={track.title}
