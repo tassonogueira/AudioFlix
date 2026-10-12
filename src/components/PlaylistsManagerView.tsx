@@ -36,13 +36,15 @@ export default function PlaylistsManagerView({
     createPlaylist,
     deletePlaylist,
     renamePlaylist,
-    removeTrackFromPlaylist
+    removeTrackFromPlaylist,
+    showToast
   } = usePlaylistContext();
 
   const [activeTab, setActiveTab] = useState<'favorites' | 'playlists'>('favorites');
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(
     playlists[0]?.id || null
   );
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   // States for creating a playlist
   const [isCreatingModal, setIsCreatingModal] = useState(false);
@@ -88,7 +90,7 @@ export default function PlaylistsManagerView({
   // Baixar playlist ou favoritas em ZIP
   const handleDownloadZip = async (tracks: PlaylistTrack[], name: string) => {
     if (!tracks || tracks.length === 0) {
-      alert('Esta lista não possui músicas para baixar.');
+      showToast('Esta lista não possui músicas para baixar.');
       return;
     }
 
@@ -106,23 +108,24 @@ export default function PlaylistsManagerView({
         try {
           let audioBlob: Blob | null = null;
 
-          // Se tiver previewUrl tenta baixar
-          if (track.previewUrl) {
+          // Se for áudio local do dispositivo (blob: / data:) usa o blob em memória
+          if (track.previewUrl && (track.previewUrl.startsWith('blob:') || track.previewUrl.startsWith('data:'))) {
             const resp = await fetch(track.previewUrl);
             if (resp.ok) {
               audioBlob = await resp.blob();
             }
           }
 
-          // Se não tiver preview direto ou falhou, tenta proxy
+          // Para todas as demais faixas online: baixa o áudio MP3 completo do YouTube
           if (!audioBlob) {
-            const query = encodeURIComponent(`${track.artist} - ${track.title}`);
-            const searchResp = await fetch(`/api/music/search?q=${query}`);
-            const searchData = await searchResp.json();
-            const candidate = searchData.results?.find((r: any) => r.previewUrl);
-            if (candidate?.previewUrl) {
-              const resp = await fetch(candidate.previewUrl);
-              if (resp.ok) audioBlob = await resp.blob();
+            const queryParams = new URLSearchParams({
+              title: track.title,
+              artist: track.artist || '',
+              ...(track.youtubeId ? { youtubeId: track.youtubeId } : {})
+            });
+            const resp = await fetch(`/api/music/download-full-track?${queryParams.toString()}`);
+            if (resp.ok) {
+              audioBlob = await resp.blob();
             }
           }
 
@@ -147,7 +150,7 @@ export default function PlaylistsManagerView({
       setTimeout(() => URL.revokeObjectURL(url), 20000);
     } catch (err) {
       console.error('Erro ao gerar ZIP:', err);
-      alert('Houve um erro ao gerar o arquivo ZIP da playlist.');
+      showToast('Houve um erro ao gerar o arquivo ZIP da playlist.');
     } finally {
       setIsZipping(false);
       setZipProgress(0);
@@ -274,7 +277,7 @@ export default function PlaylistsManagerView({
                   Nenhuma música favorita ainda
                 </h3>
                 <p className="text-xs text-slate-400 max-w-sm mx-auto">
-                  Clique no ícone de coração ❤️ em qualquer música, álbum ou clipe do AudioFlix para salvar aqui.
+                  Clique no ícone de coração ❤️ em qualquer música ou álbum do AudioFlix para salvar aqui.
                 </p>
               </div>
               <button
@@ -542,17 +545,36 @@ export default function PlaylistsManagerView({
                       </>
                     )}
 
-                    <button
-                      onClick={() => {
-                        if (confirm(`Excluir a playlist "${selectedPlaylist.name}"?`)) {
-                          deletePlaylist(selectedPlaylist.id);
-                        }
-                      }}
-                      className="p-2 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-xl transition cursor-pointer"
-                      title="Excluir playlist"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    {confirmDeleteId === selectedPlaylist.id ? (
+                      <div className="flex items-center gap-1.5 animate-in fade-in duration-150">
+                        <button
+                          onClick={() => {
+                            const targetId = selectedPlaylist.id;
+                            deletePlaylist(targetId);
+                            const remaining = playlists.filter((p) => p.id !== targetId);
+                            setSelectedPlaylistId(remaining[0]?.id || null);
+                            setConfirmDeleteId(null);
+                          }}
+                          className="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold transition cursor-pointer"
+                        >
+                          Confirmar
+                        </button>
+                        <button
+                          onClick={() => setConfirmDeleteId(null)}
+                          className="p-1 text-slate-400 hover:text-white rounded-lg text-xs"
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setConfirmDeleteId(selectedPlaylist.id)}
+                        className="p-2 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-xl transition cursor-pointer"
+                        title="Excluir playlist"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -599,9 +621,19 @@ export default function PlaylistsManagerView({
                             <span className="text-xs sm:text-sm font-bold text-white block truncate group-hover:text-emerald-400 transition">
                               {track.title}
                             </span>
-                            <span className="text-[11px] text-slate-400 block truncate">
-                              {track.artist}
-                            </span>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-[11px] text-slate-400 block truncate">
+                                {track.artist}
+                              </span>
+                              {Boolean(
+                                (track.isDeviceAudio || String(track.id).startsWith('device_') || track.artist === 'Dispositivo / Pendrive') &&
+                                (!track.previewUrl || (!track.previewUrl.startsWith('blob:') && !track.previewUrl.startsWith('data:')))
+                              ) && (
+                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-800/60 font-semibold">
+                                  Indisponível neste aparelho
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </div>
 

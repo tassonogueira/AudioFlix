@@ -29,11 +29,15 @@ import {
   Heart,
   ListPlus,
   Folder,
-  FolderCheck
+  FolderCheck,
+  Flame,
+  ListCheck
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { PlayerTrack } from './AudioFlixPlayer.tsx';
 import DownloadFullTrackModal, { DownloadTrackInfo } from './DownloadFullTrackModal.tsx';
+import VoiceSearchButton from './VoiceSearchButton.tsx';
+import VoiceCommandModal from './VoiceCommandModal.tsx';
 import { usePlaylistContext } from '../context/PlaylistContext.tsx';
 import { useDownloadManager } from '../context/DownloadManagerContext.tsx';
 import { useLongPress } from '../utils/useLongPress.ts';
@@ -151,6 +155,7 @@ export interface YouTubeMusicDownloaderProps {
   onAddTracksToQueue?: (tracks: Array<{ name: string; url?: string; blob?: Blob }>) => void;
   onSwitchToLocalWorkflow?: () => void;
   onPlayFullTrack?: (track: PlayerTrack, playlist?: PlayerTrack[]) => void;
+  onAddToQueue?: (track: PlayerTrack) => void;
   activePlayingTrackId?: string | number | null;
   isPlayingFullTrack?: boolean;
   onOpenDownloadModal?: (track: DownloadTrackInfo) => void;
@@ -161,6 +166,7 @@ export default function YouTubeMusicDownloader({
   onAddTracksToQueue,
   onSwitchToLocalWorkflow,
   onPlayFullTrack,
+  onAddToQueue,
   activePlayingTrackId,
   isPlayingFullTrack = true,
   onOpenDownloadModal,
@@ -168,9 +174,22 @@ export default function YouTubeMusicDownloader({
 }: YouTubeMusicDownloaderProps) {
   const [searchQuery, setSearchQuery] = useState(initialSearchQuery || '');
   const [activeTab, setActiveTab] = useState<'all' | 'youtube' | 'artists' | 'albums' | 'songs'>('all');
-  const [isSearching, setIsSearching] = useState(false);
-  const [searchExecuted, setSearchExecuted] = useState(false);
+  const [isSearching, setIsSearching] = useState(Boolean(initialSearchQuery && initialSearchQuery.trim()));
+  const [searchExecuted, setSearchExecuted] = useState(Boolean(initialSearchQuery && initialSearchQuery.trim()));
   const [localDownloadTrack, setLocalDownloadTrack] = useState<DownloadTrackInfo | null>(null);
+  const [viewMode, setViewMode] = useState<'charts' | 'search'>('search');
+  const [justQueuedId, setJustQueuedId] = useState<string | number | null>(null);
+  const [showVoiceModal, setShowVoiceModal] = useState<boolean>(false);
+
+  // Histórico de artistas pesquisados / navegados para navegação rápida de volta
+  const [artistHistory, setArtistHistory] = useState<Array<{ id?: string | number; name: string; avatar?: string }>>(() => {
+    try {
+      const saved = localStorage.getItem('audioflix_artist_history');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
 
   // Resultados das buscas
   const [youtubeVideos, setYoutubeVideos] = useState<YouTubeVideoResult[]>([]);
@@ -223,7 +242,17 @@ export default function YouTubeMusicDownloader({
   const [lastSearchedQuery, setLastSearchedQuery] = useState(initialSearchQuery || '');
 
   // Playlists e Favoritas Context
-  const { isFavorite, toggleFavorite, openAddToPlaylistModal, addToQueue, addDownloadRecord, showToast } = usePlaylistContext();
+  const {
+    isFavorite,
+    toggleFavorite,
+    openAddToPlaylistModal,
+    addToQueue,
+    toggleQueue,
+    isInQueue,
+    removeFromQueueById,
+    addDownloadRecord,
+    showToast
+  } = usePlaylistContext();
   const {
     startSingleTrackDownload,
     startAlbumZipDownload,
@@ -271,7 +300,7 @@ export default function YouTubeMusicDownloader({
   // Reproduzir ou Pausar prévia de áudio (fallback)
   const togglePlayPreview = (audioUrl: string | undefined, id: string | number) => {
     if (!audioUrl) {
-      alert('Prévia de áudio não disponível para este item.');
+      showToast('Prévia de áudio não disponível para este item.');
       return;
     }
 
@@ -291,7 +320,7 @@ export default function YouTubeMusicDownloader({
     }
   };
 
-  // Reproduzir Música Completa (Sem cortes de 30 segundos)
+  // Reproduzir Música Completa (Sem cortes de 30 segundos, sempre o áudio original do YouTube)
   const handlePlayTrack = (
     track: {
       id: string | number;
@@ -305,6 +334,8 @@ export default function YouTubeMusicDownloader({
     },
     playlistContext?: Array<any>
   ) => {
+    const streamPreview = track.previewUrl || undefined;
+
     if (onPlayFullTrack) {
       const formattedPlaylist = playlistContext
         ? playlistContext.map((item) => ({
@@ -315,7 +346,7 @@ export default function YouTubeMusicDownloader({
             artwork: item.artwork || item.image || item.thumbnail,
             durationSeconds: item.durationSeconds || item.seconds,
             youtubeId: item.youtubeId || (typeof item.id === 'string' && item.id.length === 11 ? item.id : undefined),
-            previewUrl: item.previewUrl
+            previewUrl: item.previewUrl || undefined
           }))
         : undefined;
 
@@ -327,14 +358,43 @@ export default function YouTubeMusicDownloader({
           album: track.album || selectedAlbum?.info.title,
           artwork: track.artwork,
           durationSeconds: track.durationSeconds,
-          youtubeId: track.youtubeId,
-          previewUrl: track.previewUrl
+          youtubeId: track.youtubeId || (typeof track.id === 'string' && track.id.length === 11 ? track.id : undefined),
+          previewUrl: streamPreview
         },
         formattedPlaylist
       );
     } else {
-      togglePlayPreview(track.previewUrl, track.id);
+      if (streamPreview) {
+        togglePlayPreview(streamPreview, track.id);
+      }
     }
+  };
+
+  // Alternar Faixa na Fila de Reprodução (Garante que se já estiver, remove da fila e retorna ao modo normal sem duplicatas)
+  const handleQueueTrack = (track: {
+    id: string | number;
+    title: string;
+    artist: string;
+    album?: string;
+    artwork?: string;
+    durationSeconds?: number;
+    previewUrl?: string;
+    youtubeId?: string;
+    isDeviceAudio?: boolean;
+  }) => {
+    const formatted: any = {
+      id: track.id,
+      title: track.title,
+      artist: track.artist,
+      album: track.album || selectedAlbum?.info.title,
+      artwork: track.artwork,
+      durationSeconds: track.durationSeconds,
+      youtubeId: track.youtubeId || (typeof track.id === 'string' && track.id.length === 11 ? track.id : undefined),
+      previewUrl: (track.previewUrl && (track.previewUrl.startsWith('blob:') || track.previewUrl.startsWith('data:'))) ? track.previewUrl : undefined,
+      isDeviceAudio: track.isDeviceAudio
+    };
+
+    toggleQueue(formatted);
   };
 
   // Abrir Modal de Download da Música Completa
@@ -372,6 +432,7 @@ export default function YouTubeMusicDownloader({
 
     setIsSearching(true);
     setSearchExecuted(true);
+    setViewMode('search');
     setLastSearchedQuery(term);
     setSelectedArtist(null);
     setSelectedAlbum(null);
@@ -425,6 +486,14 @@ export default function YouTubeMusicDownloader({
       setIsSearching(false);
     }
   };
+
+  // Dispara a pesquisa instantaneamente quando vier uma consulta da tela inicial (evita duplo clique)
+  useEffect(() => {
+    if (initialSearchQuery && initialSearchQuery.trim()) {
+      setSearchQuery(initialSearchQuery.trim());
+      handleSearch(initialSearchQuery.trim());
+    }
+  }, [initialSearchQuery]);
 
   // Abrir Perfil do Artista com Discografia Categorizada e Top Faixas
   const handleOpenArtist = async (artist: MusicArtist) => {
@@ -867,20 +936,20 @@ export default function YouTubeMusicDownloader({
         </div>
       )}
 
-      {/* SEÇÃO 1: BARRA DE BUSCA PRINCIPAL (PÁGINA INICIAL ENXUTA) */}
-      <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-sm space-y-4">
-        <div className="max-w-3xl mx-auto text-center space-y-2 mb-6">
+      {/* SEÇÃO 1: BARRA DE BUSCA PRINCIPAL (PÁGINA DEDICADA DE BUSCA) */}
+      <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 sm:p-7 shadow-sm space-y-4">
+        <div className="max-w-3xl mx-auto text-center space-y-2 mb-4">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold">
-            <Music className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Downloader & Catálogo Musical Inteligente</span>
+            <Search className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Busca Dedicada & Catálogo Musical</span>
           </div>
 
-          <h2 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-            Busque Músicas e Artistas
+          <h2 className="text-xl sm:text-3xl font-extrabold text-white tracking-tight">
+            Buscar Artistas, Álbuns & Músicas
           </h2>
 
-          <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">
-            Pesquise por nome de artista ou música para ver discografias oficiais com capas originais e ouvir faixas completas.
+          <p className="text-xs sm:text-sm text-slate-400 leading-relaxed max-w-xl mx-auto">
+            Pesquise por qualquer artista, banda, álbum completo ou vídeo do YouTube para ouvir instantaneamente e baixar no seu dispositivo.
           </p>
         </div>
 
@@ -902,12 +971,22 @@ export default function YouTubeMusicDownloader({
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Digite Artista, Música ou Álbum..."
-              className={`w-full bg-slate-950 border-2 border-slate-800 focus:border-emerald-500 rounded-2xl pl-12 py-4 text-sm sm:text-base text-white placeholder-slate-500 focus:outline-none shadow-inner transition ${
+              className={`w-full bg-slate-950 border-2 border-slate-800 focus:border-emerald-500 rounded-2xl pl-12 py-3.5 sm:py-4 text-sm sm:text-base text-white placeholder-slate-500 focus:outline-none shadow-inner transition ${
                 isShowingResults && searchQuery.trim() === lastSearchedQuery.trim() ? 'pr-12' : 'pr-32'
               }`}
             />
 
             <div className="absolute right-2.5 flex items-center gap-1.5">
+              {/* Botão de Comando de Voz */}
+              <VoiceSearchButton
+                onTranscript={(transcript) => {
+                  setSearchQuery(transcript);
+                  handleSearch(transcript);
+                }}
+                onOpenVoiceModal={() => setShowVoiceModal(true)}
+                buttonSize="sm"
+              />
+
               {searchQuery && (
                 <button
                   type="button"
@@ -935,7 +1014,7 @@ export default function YouTubeMusicDownloader({
                 <button
                   type="submit"
                   disabled={isSearching || !searchQuery.trim()}
-                  className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs sm:text-sm font-bold rounded-xl transition flex items-center gap-2 shadow-md shadow-emerald-950/40 cursor-pointer"
+                  className="px-4 sm:px-5 py-2 sm:py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs sm:text-sm font-bold rounded-xl transition flex items-center gap-2 shadow-md shadow-emerald-950/40 cursor-pointer"
                 >
                   {isSearching ? (
                     <>
@@ -979,6 +1058,116 @@ export default function YouTubeMusicDownloader({
           </div>
         )}
       </div>
+
+      {/* INDICADOR DE CARREGAMENTO ATIVO DA BUSCA (SEM TELA VAZIA OU DUPLO CLIQUE) */}
+      {isSearching && (
+        <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-8 sm:p-12 text-center space-y-3 animate-in fade-in duration-200 shadow-lg">
+          <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center mx-auto text-emerald-400">
+            <Loader2 className="w-6 h-6 animate-spin" />
+          </div>
+          <div>
+            <h3 className="text-sm sm:text-base font-bold text-white">
+              Buscando no catálogo...
+            </h3>
+            <p className="text-xs text-slate-400 mt-1">
+              Localizando músicas, artistas e álbuns para <strong className="text-emerald-400 font-mono">"{searchQuery || lastSearchedQuery || initialSearchQuery}"</strong>
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* SEÇÃO DEDICADA DE BUSCA: CHIPS DE GÊNERO & SUGESTÕES QUANDO NENHUMA BUSCA FOI EXECUTADA */}
+      {!searchExecuted && !selectedAlbum && !selectedArtist && !isSearching && (
+        <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-5 sm:p-6 space-y-5 animate-in fade-in duration-200">
+          <div>
+            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-2.5">
+              Sugestões Rápidas de Pesquisa
+            </span>
+            <div className="flex flex-wrap gap-2">
+              {[
+                { label: '🔥 Top Hits', query: 'Top Hits 2024' },
+                { label: '🎸 Rock Clássico', query: 'Rock Clássicos' },
+                { label: '🤠 Sertanejo', query: 'Sertanejo Sucessos' },
+                { label: '📻 Flashback 80/90', query: 'Flashback Anos 80 90' },
+                { label: '⚡ Pop Internacional', query: 'Pop Internacional' },
+                { label: '🎧 Eletrônica', query: 'Eletrônica Melhores' },
+                { label: '🎷 MPB & Bossa Nova', query: 'MPB Clássicos' },
+                { label: '🎤 Hip Hop & Rap', query: 'Hip Hop Melhores' }
+              ].map((chip) => (
+                <button
+                  key={chip.label}
+                  type="button"
+                  onClick={() => {
+                    setSearchQuery(chip.query);
+                    handleSearch(chip.query);
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-slate-950/80 hover:bg-emerald-600/20 text-slate-300 hover:text-emerald-300 border border-slate-800 hover:border-emerald-500/40 text-xs font-semibold transition cursor-pointer flex items-center gap-1.5"
+                >
+                  <span>{chip.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Histórico Recente de Artistas (se houver) */}
+          {artistHistory.length > 0 && (
+            <div className="pt-2 border-t border-slate-800/80">
+              <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-2.5">
+                Artistas Pesquisados Recentemente
+              </span>
+              <div className="flex flex-wrap gap-2">
+                {artistHistory.slice(0, 8).map((art, idx) => (
+                  <button
+                    key={`${art.name}-${idx}`}
+                    type="button"
+                    onClick={() => {
+                      setSearchQuery(art.name);
+                      handleSearch(art.name);
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 text-slate-200 border border-slate-800 hover:border-slate-700 text-xs font-semibold transition flex items-center gap-2 cursor-pointer"
+                  >
+                    <User className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>{art.name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Recursos em Destaque */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-3 border-t border-slate-800/80">
+            <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800/80 space-y-1">
+              <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs">
+                <Disc className="w-4 h-4" />
+                <span>Discografias em HD</span>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-tight">
+                Álbuns de estúdio, DVDs ao vivo e singles com capas originais em alta resolução.
+              </p>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800/80 space-y-1">
+              <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs">
+                <Archive className="w-4 h-4" />
+                <span>Download em ZIP</span>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-tight">
+                Baixe álbuns inteiros ou listas personalizadas com 1 clique organizados por pastas.
+              </p>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800/80 space-y-1">
+              <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs">
+                <Headphones className="w-4 h-4" />
+                <span>Áudio 100% Completo</span>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-tight">
+                Sem cortes de 30 segundos, com reprodução em segundo plano contínua.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* SEÇÃO 2: DETALHES DO ÁLBUM SELECIONADO (COM CAPA GRANDE E DOWNLOAD DO ZIP) */}
       {selectedAlbum && (
@@ -1197,6 +1386,28 @@ export default function YouTubeMusicDownloader({
                       title="Adicionar à Playlist"
                     >
                       <ListPlus className="w-3.5 h-3.5" />
+                    </button>
+
+                    <button
+                      onClick={() => handleQueueTrack(track)}
+                      className={`px-2 py-1 rounded-lg text-xs font-semibold transition flex items-center gap-1 border cursor-pointer ${
+                        isInQueue(track.id)
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-500/40'
+                          : 'bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-emerald-400 border-slate-700'
+                      }`}
+                      title={isInQueue(track.id) ? 'Na fila de reprodução (clique para remover)' : 'Adicionar à fila de reprodução (sem interromper a música atual)'}
+                    >
+                      {isInQueue(track.id) ? (
+                        <>
+                          <ListCheck className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>Na Fila</span>
+                        </>
+                      ) : (
+                        <>
+                          <ListPlus className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>+ Fila</span>
+                        </>
+                      )}
                     </button>
 
                     <button
@@ -1690,6 +1901,28 @@ export default function YouTubeMusicDownloader({
                           </button>
 
                           <button
+                            onClick={() => handleQueueTrack(single)}
+                            className={`px-2 py-1 rounded-lg transition border cursor-pointer flex items-center gap-1 text-xs font-semibold ${
+                              isInQueue(single.id)
+                                ? 'bg-purple-500/20 text-purple-300 border-purple-500/50 hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-500/40'
+                                : 'bg-slate-800 hover:bg-purple-600 hover:text-white text-slate-300 border-slate-700 hover:border-purple-500'
+                            }`}
+                            title={isInQueue(single.id) ? 'Na fila de reprodução (clique para remover)' : 'Adicionar à fila de reprodução (sem interromper a música atual)'}
+                          >
+                            {isInQueue(single.id) ? (
+                              <>
+                                <ListCheck className="w-3.5 h-3.5 text-purple-400" />
+                                <span>Na Fila</span>
+                              </>
+                            ) : (
+                              <>
+                                <ListPlus className="w-3.5 h-3.5 text-purple-400" />
+                                <span>+ Fila</span>
+                              </>
+                            )}
+                          </button>
+
+                          <button
                             onClick={() => {
                               handleDownloadSingleTrack(single);
                             }}
@@ -1800,6 +2033,28 @@ export default function YouTubeMusicDownloader({
                         </button>
 
                         <button
+                          onClick={() => handleQueueTrack(track)}
+                          className={`px-2 py-1 rounded-lg text-xs font-semibold transition flex items-center gap-1 border cursor-pointer ${
+                            isInQueue(track.id)
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-500/40'
+                              : 'bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-emerald-400 border-slate-700'
+                          }`}
+                          title={isInQueue(track.id) ? 'Na fila de reprodução (clique para remover)' : 'Adicionar à fila de reprodução (sem interromper a música atual)'}
+                        >
+                          {isInQueue(track.id) ? (
+                            <>
+                              <ListCheck className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>Na Fila</span>
+                            </>
+                          ) : (
+                            <>
+                              <ListPlus className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>+ Fila</span>
+                            </>
+                          )}
+                        </button>
+
+                        <button
                           onClick={() => handleDownloadSingleTrack(track)}
                           className="p-1.5 bg-slate-800 hover:bg-emerald-600 hover:text-white text-slate-300 rounded-lg transition cursor-pointer"
                           title="Baixar MP3 completo"
@@ -1824,7 +2079,7 @@ export default function YouTubeMusicDownloader({
           <div className="flex items-center gap-2 overflow-x-auto pb-2 border-b border-slate-800">
             {[
               { id: 'all', label: 'Tudo', count: youtubeVideos.length + artistsList.length + albumsList.length + songsList.length },
-              { id: 'youtube', label: 'Vídeos do YouTube', count: youtubeVideos.length, icon: Youtube },
+              { id: 'youtube', label: 'Faixas do YouTube', count: youtubeVideos.length, icon: Youtube },
               { id: 'artists', label: 'Artistas', count: artistsList.length, icon: User },
               { id: 'albums', label: 'Álbuns Completos', count: albumsList.length, icon: Disc },
               { id: 'songs', label: 'Faixas & Músicas', count: songsList.length, icon: Music }
@@ -1855,9 +2110,9 @@ export default function YouTubeMusicDownloader({
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
                   <Youtube className="w-4 h-4 text-red-500" />
-                  <span>Vídeos do YouTube ({youtubeVideos.length} resultados)</span>
+                  <span>Faixas do YouTube ({youtubeVideos.length} resultados)</span>
                 </h3>
-                <span className="text-xs text-slate-400">Clique para baixar ou ouvir</span>
+                <span className="text-xs text-slate-400">Clique para baixar ou ouvir áudio completo</span>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -1954,10 +2209,41 @@ export default function YouTubeMusicDownloader({
                             )
                           }
                           className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer"
-                          title="Ouvir vídeo completo no player"
+                          title="Ouvir áudio completo no player"
                         >
                           <Play className="w-3 h-3 text-emerald-400 fill-emerald-400" />
                           <span>Ouvir</span>
+                        </button>
+
+                        <button
+                          onClick={() =>
+                            handleQueueTrack({
+                              id: video.id,
+                              title: video.title,
+                              artist: video.author,
+                              artwork: video.image || video.thumbnail,
+                              durationSeconds: video.seconds,
+                              youtubeId: video.id
+                            })
+                          }
+                          className={`px-2 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1 cursor-pointer border ${
+                            isInQueue(video.id)
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-500/40'
+                              : 'bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-emerald-400 border-slate-700'
+                          }`}
+                          title={isInQueue(video.id) ? 'Na fila de reprodução (clique para remover)' : 'Adicionar à fila de reprodução (sem interromper a música atual)'}
+                        >
+                          {isInQueue(video.id) ? (
+                            <>
+                              <ListCheck className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>Na Fila</span>
+                            </>
+                          ) : (
+                            <>
+                              <ListPlus className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>+ Fila</span>
+                            </>
+                          )}
                         </button>
 
                         <button
@@ -2130,7 +2416,7 @@ export default function YouTubeMusicDownloader({
                           albumTitle={song.album}
                           albumArtwork={song.artwork}
                           onPlay={() => handlePlayTrack(song, songsList)}
-                          addToQueue={addToQueue}
+                          addToQueue={() => handleQueueTrack(song)}
                           showToast={showToast}
                         />
                       </div>
@@ -2181,6 +2467,28 @@ export default function YouTubeMusicDownloader({
                         </button>
 
                         <button
+                          onClick={() => handleQueueTrack(song)}
+                          className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1 cursor-pointer border ${
+                            isInQueue(song.id)
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-500/40'
+                              : 'bg-slate-800/90 hover:bg-slate-700 text-slate-300 hover:text-emerald-400 border-slate-700/60'
+                          }`}
+                          title={isInQueue(song.id) ? 'Na fila de reprodução (clique para remover)' : 'Adicionar à fila de reprodução (sem interromper a música atual)'}
+                        >
+                          {isInQueue(song.id) ? (
+                            <>
+                              <ListCheck className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>Na Fila</span>
+                            </>
+                          ) : (
+                            <>
+                              <ListPlus className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>+ Fila</span>
+                            </>
+                          )}
+                        </button>
+
+                        <button
                           onClick={() => handleDownloadSingleTrack(song)}
                           className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm cursor-pointer"
                           title="Baixar MP3 completo"
@@ -2205,6 +2513,20 @@ export default function YouTubeMusicDownloader({
           track={localDownloadTrack}
           onClose={() => setLocalDownloadTrack(null)}
           onAddToLocalRepair={onAddTracksToQueue ? (file) => onAddTracksToQueue([file]) : undefined}
+        />
+      )}
+
+      {/* MODAL DE COMANDO DE VOZ */}
+      {showVoiceModal && (
+        <VoiceCommandModal
+          isOpen={showVoiceModal}
+          onClose={() => setShowVoiceModal(false)}
+          onPlayTrack={(track) => handlePlayTrack(track)}
+          onSearchQuery={(q) => {
+            setSearchQuery(q);
+            handleSearch(q);
+          }}
+          isPlaying={isPlayingFullTrack}
         />
       )}
 

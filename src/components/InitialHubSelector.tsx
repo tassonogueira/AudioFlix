@@ -1,199 +1,210 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Search,
-  FolderUp,
-  ArrowRight,
   Headphones,
-  Heart,
-  Download,
-  ListPlus,
-  Play,
-  Sparkles,
-  HardDrive
+  Flame,
+  ArrowRight,
+  X,
+  Sparkles
 } from 'lucide-react';
-import { usePlaylistContext } from '../context/PlaylistContext.tsx';
 
 interface InitialHubSelectorProps {
   onSelectSearch: (initialQuery?: string) => void;
-  onSelectRepair: () => void;
+  onSelectRepair?: () => void;
   onSelectPlaylists?: () => void;
   onSelectDownloads?: () => void;
-  onLoadSamples: () => void;
+  onSelectCharts?: () => void;
+  onLoadSamples?: () => void;
+  onPlayLocalFiles?: (files: File[]) => void;
 }
+
+const PLACEHOLDER_SUGGESTIONS = [
+  'Ex: Coldplay, Imagine Dragons...',
+  'Ex: Flashback anos 80 e 90...',
+  'Ex: Henrique & Juliano, Ana Castela...',
+  'Ex: Queen, Bon Jovi, Guns N\' Roses...',
+  'Ex: Alok, Vintage Culture, Eletrônica...',
+  'Digite qualquer artista, música ou álbum...'
+];
+
+const QUICK_SEARCH_CHIPS = [
+  { label: '🔥 Em Alta', query: 'Top Hits 2024' },
+  { label: '📻 Flashback', query: 'Flashback Anos 80 90' },
+  { label: '🤠 Sertanejo', query: 'Sertanejo Sucessos' },
+  { label: '🎸 Rock Clássico', query: 'Rock Clássicos' }
+];
 
 export default function InitialHubSelector({
   onSelectSearch,
-  onSelectRepair,
-  onSelectPlaylists,
-  onSelectDownloads
+  onSelectCharts
 }: InitialHubSelectorProps) {
-  const { favorites, playlists, downloads } = usePlaylistContext();
+  const [queryInput, setQueryInput] = useState('');
+  const [placeholderIndex, setPlaceholderIndex] = useState(0);
 
-  const quickArtistPills = [
-    'Jorge & Mateus',
-    'Henrique & Juliano',
-    'Gusttavo Lima',
-    'Marília Mendonça',
-    'Coldplay',
-    'Queen'
-  ];
+  // Efeito de transição suave do placeholder moderno a cada 3.5 segundos
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setPlaceholderIndex((prev) => (prev + 1) % PLACEHOLDER_SUGGESTIONS.length);
+    }, 3500);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (queryInput.trim()) {
+      onSelectSearch(queryInput.trim());
+    } else {
+      onSelectSearch();
+    }
+  };
+
+  const handleChipClick = (query: string) => {
+    setQueryInput(query);
+    onSelectSearch(query);
+  };
 
   return (
-    <div className="max-w-5xl mx-auto py-6 sm:py-10 px-4 space-y-6 sm:space-y-8 animate-in fade-in duration-300">
-      {/* Hero Header */}
-      <div className="text-center space-y-2 max-w-2xl mx-auto">
-        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold">
-          <Sparkles className="w-3.5 h-3.5" />
-          <span>Áudio Contínuo em Segundo Plano • PiP Sob Demanda • Downloads 100% no Dispositivo</span>
+    <div className="w-full max-w-4xl mx-auto px-3 sm:px-4 py-1 sm:py-2 flex flex-col justify-center items-center space-y-2.5 sm:space-y-4 animate-in fade-in duration-300">
+      
+      {/* SEÇÃO HERO COM MOVIMENTO LEVE E CHAMATIVO */}
+      <div className="relative text-center space-y-1.5 sm:space-y-2.5 max-w-2xl mx-auto select-none">
+        {/* Aura ambiente sutil e pulsante de iluminação de fundo */}
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-56 sm:w-96 h-20 sm:h-32 bg-emerald-500/15 blur-3xl rounded-full pointer-events-none animate-pulse-glow" />
+
+        {/* Título com gradiente animado suave (shimmer) e leve flutuação */}
+        <div className="relative animate-float-subtle">
+          <h1 className="text-xl sm:text-3xl lg:text-4xl font-black tracking-tight leading-snug sm:leading-tight text-white animate-text-shimmer bg-gradient-to-r from-white via-emerald-200 to-white bg-clip-text">
+            O que você quer ouvir agora?
+          </h1>
         </div>
-        <h1 className="text-2xl sm:text-4xl font-extrabold text-white tracking-tight">
-          O que você deseja fazer agora?
-        </h1>
+
+        {/* Subtítulo dinâmico e refinado */}
+        <p className="text-[11px] sm:text-xs md:text-sm text-slate-300/90 max-w-md sm:max-w-lg mx-auto leading-tight sm:leading-relaxed relative z-10 font-normal">
+          Pesquise qualquer artista, álbum ou música para tocar instantaneamente com{' '}
+          <span className="text-emerald-400 font-semibold drop-shadow-[0_0_8px_rgba(52,211,153,0.3)]">
+            reprodução contínua
+          </span>{' '}
+          e download no dispositivo.
+        </p>
+
+        {/* CAIXA DE PESQUISA MODERNA COM BORDA LUMINOSA E GLASSMORPHISM */}
+        <form onSubmit={handleSearchSubmit} className="pt-0.5 sm:pt-1 max-w-xl mx-auto w-full relative z-20">
+          <div className="group relative rounded-xl sm:rounded-2xl p-[1px] bg-gradient-to-r from-slate-700 via-emerald-500/50 to-slate-700 hover:via-emerald-400 focus-within:via-emerald-400 transition-all duration-300 shadow-xl shadow-black/50 focus-within:shadow-emerald-500/15">
+            <div className="relative flex items-center bg-slate-900/90 backdrop-blur-xl rounded-xl sm:rounded-2xl px-3 py-1.5 sm:py-2.5 gap-2">
+              <Search className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-400 shrink-0 group-focus-within:scale-110 transition-transform duration-200" />
+              
+              <input
+                type="text"
+                value={queryInput}
+                onChange={(e) => setQueryInput(e.target.value)}
+                placeholder={PLACEHOLDER_SUGGESTIONS[placeholderIndex]}
+                className="w-full bg-transparent text-xs sm:text-sm text-white placeholder-slate-500 focus:outline-none transition-all"
+              />
+
+              {queryInput && (
+                <button
+                  type="button"
+                  onClick={() => setQueryInput('')}
+                  className="p-1 text-slate-400 hover:text-white rounded-lg transition shrink-0 cursor-pointer"
+                  title="Limpar pesquisa"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+
+              <button
+                type="submit"
+                className="px-3 sm:px-4 py-1.5 sm:py-2 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 active:scale-95 text-slate-950 font-black text-xs rounded-lg sm:rounded-xl shadow-md shadow-emerald-500/30 transition flex items-center gap-1.5 shrink-0 cursor-pointer"
+              >
+                <span>Buscar</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+
+          {/* CHIPS RÁPIDOS INTERATIVOS ABAIXO DA BUSCA */}
+          <div className="flex flex-wrap items-center justify-center gap-1.5 pt-1.5 text-[10px] sm:text-[11px]">
+            {QUICK_SEARCH_CHIPS.map((chip) => (
+              <button
+                key={chip.label}
+                type="button"
+                onClick={() => handleChipClick(chip.query)}
+                className="px-2 sm:px-2.5 py-0.5 rounded-full bg-slate-900/80 hover:bg-slate-800 text-slate-400 hover:text-emerald-300 border border-slate-800 hover:border-emerald-500/40 transition cursor-pointer text-[10px] sm:text-[11px]"
+              >
+                {chip.label}
+              </button>
+            ))}
+          </div>
+        </form>
       </div>
 
-      {/* 3 Primary Decision Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 sm:gap-6">
+      {/* OS 2 CARDS ESSENCIAIS (LADO A LADO EM 2 COLUNAS COMPACTAS PARA NÃO ROLAR) */}
+      <div className="grid grid-cols-2 gap-2 sm:gap-4 max-w-2xl w-full mx-auto pt-0.5">
         
-        {/* CARD 1: BUSCAR ÁLBUNS E DISCOGRAFIAS */}
-        <div className="group bg-slate-900/90 hover:bg-slate-900 border-2 border-emerald-500/40 hover:border-emerald-400 rounded-3xl p-6 sm:p-7 transition-all duration-300 shadow-xl shadow-emerald-950/20 hover:shadow-2xl hover:shadow-emerald-900/30 flex flex-col justify-between space-y-5">
-          <div className="space-y-3">
-            <div className="w-13 h-13 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 group-hover:scale-105 group-hover:bg-emerald-500/20 transition-all">
-              <Search className="w-7 h-7" />
+        {/* CARD 1: BUSCAR MÚSICAS & ÁLBUNS */}
+        <div
+          onClick={() => onSelectSearch(queryInput || undefined)}
+          className="group bg-slate-900/85 hover:bg-slate-900 border border-emerald-500/30 hover:border-emerald-400 rounded-xl sm:rounded-2xl p-3 sm:p-4.5 transition-all duration-200 shadow-lg shadow-emerald-950/20 hover:shadow-emerald-900/30 flex flex-col justify-between space-y-2 sm:space-y-3 cursor-pointer"
+        >
+          <div className="space-y-1 sm:space-y-2">
+            <div className="w-7 h-7 sm:w-9 sm:h-9 rounded-lg sm:rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 group-hover:scale-105 transition-all">
+              <Headphones className="w-3.5 h-3.5 sm:w-4.5 sm:h-4.5" />
             </div>
 
             <div>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400 block mb-1">
-                Catálogo Oficial & Capas HD
+              <span className="text-[8px] sm:text-[10px] font-bold uppercase tracking-wider text-emerald-400 block truncate">
+                Catálogo Completo & Capas HD
               </span>
-              <h2 className="text-xl font-extrabold text-white tracking-tight">
+              <h2 className="text-xs sm:text-base font-black text-white tracking-tight leading-snug">
                 Buscar Músicas & Álbuns
               </h2>
             </div>
 
-            <p className="text-xs text-slate-400 leading-relaxed">
-              Explore discografias, álbuns de estúdio e ao vivo com áudio 100% completo e download direto para o seu dispositivo.
+            <p className="text-[10px] sm:text-xs text-slate-400 leading-tight sm:leading-relaxed line-clamp-2">
+              Discografias, DVDs ao vivo e faixas avulsas 100% completas sem 30s.
             </p>
           </div>
 
-          <div className="space-y-3">
-            <button
-              onClick={() => onSelectSearch()}
-              className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 active:scale-[0.98] text-white font-bold text-sm rounded-2xl shadow-lg shadow-emerald-950/60 transition flex items-center justify-center gap-2 cursor-pointer"
-            >
-              <Headphones className="w-4 h-4" />
-              <span>Explorar Catálogo</span>
-              <ArrowRight className="w-4 h-4 ml-1" />
-            </button>
-
-            {/* Quick Artist Shortcuts */}
-            <div className="flex flex-wrap items-center justify-center gap-1">
-              {quickArtistPills.slice(0, 4).map((artist) => (
-                <button
-                  key={artist}
-                  onClick={() => onSelectSearch(artist)}
-                  className="text-[11px] px-2 py-0.5 rounded-lg bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-800 hover:border-emerald-500/40 transition cursor-pointer"
-                >
-                  {artist}
-                </button>
-              ))}
-            </div>
+          <div className="w-full py-1.5 sm:py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px] sm:text-xs rounded-lg sm:rounded-xl shadow-md transition flex items-center justify-center gap-1.5">
+            <Search className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+            <span>Explorar Catálogo</span>
+            <ArrowRight className="w-3 h-3 sm:w-3.5 sm:h-3.5 group-hover:translate-x-1 transition" />
           </div>
         </div>
 
-        {/* CARD 2: MINHAS PLAYLISTS & FAVORITAS */}
-        <div className="group bg-slate-900/90 hover:bg-slate-900 border-2 border-slate-800 hover:border-rose-500/60 rounded-3xl p-6 sm:p-7 transition-all duration-300 shadow-xl shadow-slate-950/50 hover:shadow-2xl hover:shadow-rose-950/20 flex flex-col justify-between space-y-5">
-          <div className="space-y-3">
-            <div className="w-13 h-13 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 group-hover:scale-105 group-hover:bg-rose-500/20 transition-all">
-              <Heart className="w-7 h-7 fill-current" />
+        {/* CARD 2: MÚSICAS MAIS OUVIDAS (RANKINGS OFICIAIS) */}
+        <div
+          onClick={() => onSelectCharts?.()}
+          className="group bg-slate-900/85 hover:bg-slate-900 border border-amber-500/30 hover:border-amber-400 rounded-xl sm:rounded-2xl p-3 sm:p-4.5 transition-all duration-200 shadow-lg shadow-amber-950/20 hover:shadow-amber-900/30 flex flex-col justify-between space-y-2 sm:space-y-3 cursor-pointer"
+        >
+          <div className="space-y-1 sm:space-y-2">
+            <div className="w-7 h-7 sm:w-9 sm:h-9 rounded-lg sm:rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 group-hover:scale-105 transition-all">
+              <Flame className="w-3.5 h-3.5 sm:w-4.5 sm:h-4.5" />
             </div>
 
             <div>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-rose-400 block mb-1">
-                Suas Coleções Pessoais
+              <span className="text-[8px] sm:text-[10px] font-bold uppercase tracking-wider text-amber-400 block truncate">
+                Top Rankings & Anos
               </span>
-              <h2 className="text-xl font-extrabold text-white tracking-tight">
-                Playlists & Favoritas
+              <h2 className="text-xs sm:text-base font-black text-white tracking-tight leading-snug">
+                Músicas Mais Ouvidas
               </h2>
             </div>
 
-            <p className="text-xs text-slate-400 leading-relaxed">
-              Crie suas próprias listas, salve suas faixas preferidas e toque com reprodução contínua e tela bloqueada.
+            <p className="text-[10px] sm:text-xs text-slate-400 leading-tight sm:leading-relaxed line-clamp-2">
+              Paradas oficiais por países (Brasil, Global), anos 70/80/90/2000 e gêneros.
             </p>
           </div>
 
-          <div>
-            <button
-              onClick={() => onSelectPlaylists?.()}
-              className="w-full py-3 bg-rose-600 hover:bg-rose-500 active:scale-[0.98] text-white font-bold text-sm rounded-2xl shadow-lg shadow-rose-950/40 transition flex items-center justify-center gap-2 cursor-pointer"
-            >
-              <Heart className="w-4 h-4 fill-current" />
-              <span>Acessar Minhas Listas</span>
-              <ArrowRight className="w-4 h-4 ml-1" />
-            </button>
-          </div>
-        </div>
-
-        {/* CARD 3: REPARAR ARQUIVOS DE ÁUDIO (PENDRIVE) */}
-        <div className="group bg-slate-900/90 hover:bg-slate-900 border-2 border-slate-800 hover:border-amber-500/60 rounded-3xl p-6 sm:p-7 transition-all duration-300 shadow-xl shadow-slate-950/50 hover:shadow-2xl hover:shadow-amber-950/20 flex flex-col justify-between space-y-5">
-          <div className="space-y-3">
-            <div className="w-13 h-13 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 group-hover:scale-105 group-hover:bg-amber-500/20 transition-all">
-              <FolderUp className="w-7 h-7" />
-            </div>
-
-            <div>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 block mb-1">
-                Utilitário de Pendrive
-              </span>
-              <h2 className="text-xl font-extrabold text-white tracking-tight">
-                Reparar Pendrive
-              </h2>
-            </div>
-
-            <p className="text-xs text-slate-400 leading-relaxed">
-              Conserte arquivos que não tocam no som do carro, padronize títulos e exporte em MP3 100% compatível.
-            </p>
-          </div>
-
-          <div>
-            <button
-              onClick={() => onSelectRepair()}
-              className="w-full py-3 bg-slate-800 hover:bg-amber-600 active:scale-[0.98] text-white font-bold text-sm rounded-2xl border border-slate-700 hover:border-amber-500 shadow-lg transition flex items-center justify-center gap-2 cursor-pointer"
-            >
-              <FolderUp className="w-4 h-4 text-amber-400 group-hover:text-white" />
-              <span>Reparar Meu Pendrive</span>
-              <ArrowRight className="w-4 h-4 ml-1" />
-            </button>
+          <div className="w-full py-1.5 sm:py-2 bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 text-slate-950 font-black text-[10px] sm:text-xs rounded-lg sm:rounded-xl shadow-md transition flex items-center justify-center gap-1.5">
+            <Flame className="w-3 h-3 sm:w-3.5 sm:h-3.5 fill-slate-950 text-slate-950" />
+            <span>Mais Tocadas</span>
+            <ArrowRight className="w-3 h-3 sm:w-3.5 sm:h-3.5 group-hover:translate-x-1 transition" />
           </div>
         </div>
 
       </div>
 
-      {/* BANNER RÁPIDO: MEUS DOWNLOADS SALVOS */}
-      {onSelectDownloads && (
-        <div
-          onClick={onSelectDownloads}
-          className="bg-slate-900/80 hover:bg-slate-900 border border-slate-800 hover:border-emerald-500/40 rounded-2xl p-4 sm:p-5 flex items-center justify-between gap-4 cursor-pointer transition group shadow-md"
-        >
-          <div className="flex items-center gap-3.5 min-w-0">
-            <div className="w-11 h-11 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition">
-              <HardDrive className="w-5 h-5" />
-            </div>
-            <div className="truncate">
-              <span className="text-sm font-bold text-white block group-hover:text-emerald-300 transition">
-                Meus Downloads ({downloads.length} {downloads.length === 1 ? 'arquivo' : 'arquivos'})
-              </span>
-              <span className="text-xs text-slate-400 block mt-0.5">
-                Acesse todas as músicas e álbuns baixados no seu dispositivo
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 text-xs font-bold text-emerald-400 group-hover:text-emerald-300 shrink-0">
-            <span className="hidden sm:inline">Ver Downloads</span>
-            <ArrowRight className="w-4 h-4 group-hover:translate-x-0.5 transition" />
-          </div>
-        </div>
-      )}
     </div>
   );
 }

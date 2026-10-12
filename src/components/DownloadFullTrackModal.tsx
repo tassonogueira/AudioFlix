@@ -108,7 +108,7 @@ export default function DownloadFullTrackModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-slate-900 border border-slate-700/80 rounded-3xl max-w-md w-full p-6 sm:p-7 shadow-2xl relative space-y-6">
+      <div className="bg-slate-900 border border-slate-700/80 rounded-2xl sm:rounded-3xl max-w-md w-full p-4.5 sm:p-6 shadow-2xl relative space-y-4 sm:space-y-5 max-h-[92dvh] overflow-y-auto">
         
         {/* Fechar */}
         <button

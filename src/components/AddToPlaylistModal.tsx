@@ -57,7 +57,7 @@ export default function AddToPlaylistModal({ track, onClose }: AddToPlaylistModa
       onClick={onClose}
     >
       <div
-        className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-200"
+        className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-200 max-h-[92dvh] overflow-y-auto"
         style={{ backgroundColor: '#0e1422' }}
         onClick={(e) => e.stopPropagation()}
       >

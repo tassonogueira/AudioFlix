@@ -21,7 +21,7 @@ import { useDownloadManager } from '../context/DownloadManagerContext.tsx';
 import { PlayerTrack } from './AudioFlixPlayer.tsx';
 
 interface DownloadsHistoryViewProps {
-  onPlayTrack: (track: PlayerTrack) => void;
+  onPlayTrack: (track: PlayerTrack, playlist?: PlayerTrack[]) => void;
   onExploreSongs: () => void;
 }
 
@@ -329,17 +329,32 @@ export default function DownloadsHistoryView({
                   {/* Tocar no Player se for faixa */}
                   {!isZip && (
                     <button
-                      onClick={() =>
-                        onPlayTrack({
-                          id: item.youtubeId || item.id,
-                          title: item.title,
-                          artist: item.artist,
-                          album: item.album,
-                          artwork: item.artwork,
-                          durationSeconds: item.durationSeconds,
-                          youtubeId: item.youtubeId
-                        })
-                      }
+                      onClick={() => {
+                        const nonZipTracks: PlayerTrack[] = downloads
+                          .filter((d) => d.type === 'single_mp3')
+                          .map((d) => ({
+                            id: d.youtubeId || d.id,
+                            title: d.title,
+                            artist: d.artist,
+                            album: d.album,
+                            artwork: d.artwork,
+                            durationSeconds: d.durationSeconds,
+                            youtubeId: d.youtubeId
+                          }));
+
+                        onPlayTrack(
+                          {
+                            id: item.youtubeId || item.id,
+                            title: item.title,
+                            artist: item.artist,
+                            album: item.album,
+                            artwork: item.artwork,
+                            durationSeconds: item.durationSeconds,
+                            youtubeId: item.youtubeId
+                          },
+                          nonZipTracks
+                        );
+                      }}
                       className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-sm cursor-pointer"
                       title="Ouvir no reprodutor com reprodução em segundo plano"
                     >

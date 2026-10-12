@@ -48,10 +48,15 @@ import {
   Home,
   Menu,
   Heart,
-  ListPlus
+  ListPlus,
+  ListMusic,
+  Flame,
+  Cloud,
+  Mic
 } from 'lucide-react';
 import JSZip from 'jszip';
 import YouTubeMusicDownloader from './components/YouTubeMusicDownloader.tsx';
+import TopChartsView from './components/TopChartsView.tsx';
 import SplashScreen from './components/SplashScreen.tsx';
 import InitialHubSelector from './components/InitialHubSelector.tsx';
 import AudioFlixPlayer, { PlayerTrack } from './components/AudioFlixPlayer.tsx';
@@ -63,6 +68,8 @@ import MobileQueueDrawer from './components/MobileQueueDrawer.tsx';
 import OfflineBanner from './components/OfflineBanner.tsx';
 import FloatingDownloadBadge from './components/FloatingDownloadBadge.tsx';
 import DownloadQueueDrawer from './components/DownloadQueueDrawer.tsx';
+import ScrollToTopButton from './components/ScrollToTopButton.tsx';
+import TermsAndLoginModal from './components/TermsAndLoginModal.tsx';
 import { DownloadManagerProvider, useDownloadManager } from './context/DownloadManagerContext.tsx';
 import { PlaylistProvider, usePlaylistContext } from './context/PlaylistContext.tsx';
 import { detectAudioFormat, AudioDetectionResult } from './utils/audioDetector.ts';
@@ -119,7 +126,23 @@ function AudioFlixWithDownloadManager() {
 
 function AudioFlixMain() {
   // Playlist, Favoritas & Downloads Context
-  const { modalTrack, closeAddToPlaylistModal, toastMessage, favorites, playlists, downloads } = usePlaylistContext();
+  const {
+    modalTrack,
+    closeAddToPlaylistModal,
+    toastMessage,
+    favorites,
+    playlists,
+    downloads,
+    showToast,
+    setQueueTracks,
+    addToQueue,
+    queue: playbackQueue,
+    isQueueOpen,
+    setIsQueueOpen,
+    user,
+    isTermsModalOpen,
+    setIsTermsModalOpen
+  } = usePlaylistContext();
 
   // Gerenciador de Downloads em Segundo Plano & Gaveta
   const { setIsDrawerOpen, hasActiveDownloads } = useDownloadManager();
@@ -130,8 +153,8 @@ function AudioFlixMain() {
   // Estado do Menu do Header
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
 
-  // Modo Principal da Aplicação: 'hub' | 'downloader' | 'playlists' | 'downloads' | 'local_workflow'
-  const [appMode, setAppMode] = useState<'hub' | 'downloader' | 'playlists' | 'downloads' | 'local_workflow'>('hub');
+  // Modo Principal da Aplicação: 'hub' | 'downloader' | 'charts' | 'playlists' | 'downloads' | 'local_workflow'
+  const [appMode, setAppMode] = useState<'hub' | 'downloader' | 'charts' | 'playlists' | 'downloads' | 'local_workflow'>('hub');
   const [initialSearchQuery, setInitialSearchQuery] = useState<string>('');
 
   // Controle de rolagem para ocultar o Header ao rolar
@@ -158,6 +181,71 @@ function AudioFlixMain() {
   // Player de Áudio Global para Músicas Completas (Sem cortes de 30s)
   const [activePlayerTrack, setActivePlayerTrack] = useState<PlayerTrack | null>(null);
   const [playerPlaylist, setPlayerPlaylist] = useState<PlayerTrack[]>([]);
+  const [isPlayerPlaying, setIsPlayerPlaying] = useState<boolean>(true);
+  const togglePlayerPlayRef = useRef<(() => void) | null>(null);
+
+  const handleTogglePlayerPlay = useCallback(() => {
+    if (togglePlayerPlayRef.current) {
+      togglePlayerPlayRef.current();
+    }
+  }, []);
+
+  // Handler inteligente: se clicar na mesma música que já está tocando, alterna Play/Pause sem reiniciar nem duplicar
+  const handlePlayTrackRequest = useCallback((track: PlayerTrack, list?: PlayerTrack[]) => {
+    if (activePlayerTrack && String(activePlayerTrack.id) === String(track.id)) {
+      handleTogglePlayerPlay();
+      return;
+    }
+    setActivePlayerTrack(track);
+    if (list) setPlayerPlaylist(list);
+  }, [activePlayerTrack, handleTogglePlayerPlay]);
+
+  // Validação rápida para garantir que músicas locais na lista de reprodução estão realmente disponíveis neste aparelho
+  const sanitizePlayableTracks = useCallback((tracks: PlayerTrack[]): PlayerTrack[] => {
+    return tracks.filter((t) => {
+      const isDevice = Boolean(
+        t.isDeviceAudio ||
+        String(t.id || '').startsWith('device_') ||
+        t.artist === 'Dispositivo / Pendrive' ||
+        (t.previewUrl && (t.previewUrl.startsWith('blob:') || t.previewUrl.startsWith('data:')))
+      );
+      if (isDevice) {
+        return Boolean(t.previewUrl && (t.previewUrl.startsWith('blob:') || t.previewUrl.startsWith('data:')));
+      }
+      return true; // Músicas do YouTube / catálogo online sempre válidas em qualquer dispositivo
+    });
+  }, []);
+
+  // Adiciona faixa ao estado playerPlaylist do App.tsx sem duplicar na fila
+  const handleAddToPlayerPlaylist = useCallback((track: PlayerTrack, playImmediately: boolean = false) => {
+    if (playImmediately) {
+      setActivePlayerTrack(track);
+      setPlayerPlaylist((prev) => {
+        const exists = prev.some((t) => String(t.id) === String(track.id));
+        if (exists) return prev;
+        return sanitizePlayableTracks([...prev, track]);
+      });
+      showToast(`▶️ Reproduzindo "${track.title}" agora!`);
+    } else {
+      // Adiciona exclusivamente à fila temporária (Queue) sem duplicar na playlist principal
+      addToQueue({
+        id: track.id,
+        title: track.title,
+        artist: track.artist,
+        album: track.album,
+        artwork: track.artwork,
+        durationSeconds: track.durationSeconds,
+        youtubeId: track.youtubeId,
+        previewUrl: track.previewUrl,
+        isDeviceAudio: track.isDeviceAudio
+      });
+      // Se não houver nenhuma música tocando no momento, inicia
+      if (!activePlayerTrack) {
+        setActivePlayerTrack(track);
+      }
+      showToast(`🎵 "${track.title}" adicionada à fila de reprodução!`);
+    }
+  }, [activePlayerTrack, addToQueue, showToast]);
 
   // Modal de Download de Faixa Completa
   const [downloadModalTrack, setDownloadModalTrack] = useState<DownloadTrackInfo | null>(null);
@@ -215,6 +303,7 @@ function AudioFlixMain() {
   // Referências para os inputs de arquivo
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const deviceAudioInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const audio = new Audio();
@@ -355,6 +444,55 @@ function AudioFlixMain() {
   const handleLoadSamples = async () => {
     const sampleFiles = generateTestSampleFiles();
     await addFilesToQueue(sampleFiles);
+  };
+
+  // Reprodução de Músicas da Memória do Dispositivo / Pendrive USB no Player
+  const handlePlayDeviceAudioFiles = (files: File[]) => {
+    if (!files || files.length === 0) return;
+    const audioFiles = files.filter(f => {
+      const ext = f.name.toLowerCase();
+      return f.type.startsWith('audio/') ||
+        ext.endsWith('.mp3') || ext.endsWith('.m4a') || ext.endsWith('.wav') ||
+        ext.endsWith('.flac') || ext.endsWith('.aac') || ext.endsWith('.ogg') ||
+        ext.endsWith('.opus') || ext.endsWith('.wma');
+    });
+
+    if (audioFiles.length === 0) {
+      showToast('Nenhum arquivo de áudio compatível foi encontrado.');
+      return;
+    }
+
+    const localTracks: PlayerTrack[] = audioFiles.map((file, idx) => {
+      const cleanName = file.name
+        .replace(/\.[^/.]+$/, '')
+        .replace(/^\d+[\s.-]+/, '')
+        .trim();
+      return {
+        id: `device_${Date.now()}_${idx}`,
+        title: cleanName || file.name,
+        artist: 'Dispositivo / Pendrive',
+        album: 'Músicas Locais',
+        previewUrl: URL.createObjectURL(file),
+        durationSeconds: 180,
+        isDeviceAudio: true
+      };
+    });
+
+    // Isola a fila de reprodução para conter estritamente as músicas selecionadas do dispositivo
+    const localPlaylistTracks = localTracks.map(t => ({
+      id: t.id,
+      title: t.title,
+      artist: t.artist,
+      album: t.album,
+      durationSeconds: t.durationSeconds,
+      previewUrl: t.previewUrl,
+      isDeviceAudio: true
+    }));
+    setQueueTracks(localPlaylistTracks, 0);
+
+    setActivePlayerTrack(localTracks[0]);
+    setPlayerPlaylist(localTracks);
+    showToast(`🎵 Tocando ${localTracks.length} músicas do dispositivo (modo local isolado)!`);
   };
 
   // Tocar/pausar pré-escuta de áudio (tipo: 'before' = arquivo original, 'after' = arquivo pronto)
@@ -827,6 +965,25 @@ function AudioFlixMain() {
     }
   };
 
+  // Bloqueio rigoroso de scroll na página de fundo quando o Menu Hamburguer estiver aberto
+  useEffect(() => {
+    if (isMenuOpen) {
+      const prevHtmlOverflow = document.documentElement.style.overflow;
+      const prevBodyOverflow = document.body.style.overflow;
+      const prevBodyOverscroll = document.body.style.overscrollBehavior;
+
+      document.documentElement.style.overflow = 'hidden';
+      document.body.style.overflow = 'hidden';
+      document.body.style.overscrollBehavior = 'contain';
+
+      return () => {
+        document.documentElement.style.overflow = prevHtmlOverflow;
+        document.body.style.overflow = prevBodyOverflow;
+        document.body.style.overscrollBehavior = prevBodyOverscroll;
+      };
+    }
+  }, [isMenuOpen]);
+
   // Estatísticas da fila
   const totalCount = queue.length;
   const selectedCount = selectedIds.size > 0 ? selectedIds.size : totalCount;
@@ -877,7 +1034,9 @@ function AudioFlixMain() {
   ];
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between selection:bg-emerald-500/20 selection:text-emerald-300">
+    <div className={`min-h-[100dvh] bg-slate-950 text-slate-100 flex flex-col justify-between selection:bg-emerald-500/20 selection:text-emerald-300 ${
+      appMode === 'hub' ? 'h-[100dvh] max-h-[100dvh] overflow-hidden' : ''
+    }`}>
       
       {/* 1. TOP BAR - O HEADER SOME AO ROLAR */}
       <header
@@ -885,7 +1044,9 @@ function AudioFlixMain() {
           isHeaderVisible ? 'translate-y-0' : '-translate-y-full pointer-events-none'
         }`}
       >
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
+        <div className={`max-w-7xl mx-auto px-4 sm:px-6 flex items-center justify-between ${
+          appMode === 'hub' ? 'py-2 sm:py-2.5' : 'py-3'
+        }`}>
           <div
             onClick={() => setAppMode('hub')}
             className="flex items-center gap-2.5 cursor-pointer group"
@@ -898,84 +1059,6 @@ function AudioFlixMain() {
                 Audio<span className="text-emerald-400">Flix</span>
               </span>
             </div>
-          </div>
-
-          {/* SELETOR DE MODO NO HEADER (DESKTOP) */}
-          <div className="hidden md:flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800">
-            <button
-              onClick={() => setAppMode('hub')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer ${
-                appMode === 'hub'
-                  ? 'bg-slate-800 text-white shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Home className="w-3.5 h-3.5 text-slate-300" />
-              <span>Início</span>
-            </button>
-
-            <button
-              onClick={() => setAppMode('downloader')}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer ${
-                appMode === 'downloader'
-                  ? 'bg-emerald-600 text-white shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Search className="w-3.5 h-3.5 text-emerald-300" />
-              <span>Buscar Álbuns & Músicas</span>
-            </button>
-
-            <button
-              onClick={() => setAppMode('playlists')}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer ${
-                appMode === 'playlists'
-                  ? 'bg-rose-600 text-white shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Heart className={`w-3.5 h-3.5 ${appMode === 'playlists' ? 'fill-current text-white' : 'text-rose-400'}`} />
-              <span>Favoritas & Playlists</span>
-              {favorites.length > 0 && (
-                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-800 text-rose-300 font-bold font-mono">
-                  {favorites.length}
-                </span>
-              )}
-            </button>
-
-            <button
-              onClick={() => setAppMode('downloads')}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer ${
-                appMode === 'downloads'
-                  ? 'bg-emerald-600 text-white shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Download className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Meus Downloads</span>
-              {downloads.length > 0 && (
-                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-800 text-emerald-300 font-bold font-mono">
-                  {downloads.length}
-                </span>
-              )}
-            </button>
-
-            <button
-              onClick={() => setAppMode('local_workflow')}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer ${
-                appMode === 'local_workflow'
-                  ? 'bg-emerald-600 text-white shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <FolderUp className="w-3.5 h-3.5 text-amber-400" />
-              <span>Reparar Pendrive</span>
-              {totalCount > 0 && (
-                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-800 text-emerald-400 font-bold">
-                  {totalCount}
-                </span>
-              )}
-            </button>
           </div>
 
           {/* AÇÕES E BOTÃO DE MENU */}
@@ -992,18 +1075,34 @@ function AudioFlixMain() {
               </button>
             )}
 
-            {/* Botão de Fila de Downloads em 2º Plano */}
-            <button
-              onClick={() => setIsDrawerOpen(true)}
-              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 hover:border-emerald-500/50 transition flex items-center gap-1.5 text-xs font-semibold cursor-pointer shadow-sm relative"
-              title="Abrir Fila de Downloads e Pasta de Destino"
-            >
-              <Download className="w-4 h-4 text-emerald-400" />
-              <span className="hidden sm:inline">Fila</span>
-              {hasActiveDownloads && (
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping absolute -top-0.5 -right-0.5" />
-              )}
-            </button>
+            {/* Botão de Conta / Sincronização em Nuvem (Google Auth) */}
+            {user ? (
+              <button
+                onClick={() => setIsTermsModalOpen(true)}
+                className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-200 border border-blue-500/40 hover:border-blue-400 transition flex items-center gap-1.5 text-xs font-semibold cursor-pointer shadow-sm group"
+                title={`Conectado como ${user.name} • Sincronização em Nuvem Ativa`}
+              >
+                <div className="w-5 h-5 rounded-full overflow-hidden bg-slate-700 border border-blue-400 shrink-0">
+                  <img src={user.avatar} alt={user.name} className="w-full h-full object-cover" />
+                </div>
+                <span className="hidden sm:inline truncate max-w-[80px] text-white font-bold">{user.name.split(' ')[0]}</span>
+                <Cloud className="w-3.5 h-3.5 text-blue-400" />
+              </button>
+            ) : (
+              <button
+                onClick={() => setIsTermsModalOpen(true)}
+                className="px-3 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-900 border border-slate-200 transition flex items-center gap-1.5 text-xs font-bold cursor-pointer shadow-md"
+                title="Acessar com Conta Google para sincronizar favoritos e playlists"
+              >
+                <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24">
+                  <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                  <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                  <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+                  <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+                </svg>
+                <span>Entrar</span>
+              </button>
+            )}
 
             <button
               onClick={() => setIsMenuOpen(true)}
@@ -1017,71 +1116,118 @@ function AudioFlixMain() {
         </div>
       </header>
 
-      {/* DRAWER / MODAL DO MENU COM FUNDO 100% OPACO SÓLIDO */}
+      {/* DRAWER / MODAL DO MENU RESPONSIVO (SEM BOTÃO INÍCIO, DIRETO E SEM SCROLL) */}
       {isMenuOpen && (
         <div
           className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-sm flex justify-end animate-in fade-in duration-200"
           onClick={() => setIsMenuOpen(false)}
         >
           <div
-            className="w-72 sm:w-80 h-full bg-slate-950 border-l border-slate-800 p-6 flex flex-col justify-between shadow-2xl animate-in slide-in-from-right duration-200 z-[101]"
+            className="w-72 sm:w-80 h-full max-h-screen bg-slate-950 border-l border-slate-800 p-4 sm:p-5 flex flex-col justify-between shadow-2xl overflow-hidden select-none animate-in slide-in-from-right duration-200 z-[101]"
             style={{ backgroundColor: '#0b0f19' }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="space-y-6">
-              <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+            {/* Bloco Superior: Branding + Auth + Navegação Direta */}
+            <div className="flex flex-col space-y-2.5 sm:space-y-3 min-h-0">
+              {/* Header do Menu (Branding Puro e Botão Fechar, sem Botão Início) */}
+              <div className="flex items-center justify-between pb-2 border-b border-slate-800 shrink-0">
                 <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-                    <Play className="w-4 h-4 fill-current ml-0.5" />
+                  <div className="w-7 h-7 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                    <Play className="w-3.5 h-3.5 fill-current ml-0.5" />
                   </div>
-                  <span className="text-lg font-black text-white tracking-tight">
+                  <span className="text-base font-black text-white tracking-tight">
                     Audio<span className="text-emerald-400">Flix</span>
                   </span>
                 </div>
                 <button
                   onClick={() => setIsMenuOpen(false)}
                   className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition cursor-pointer"
+                  title="Fechar menu"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
-              {/* Itens do Menu */}
-              <div className="space-y-2">
+              {/* Card de Usuário / Google Auth no Topo do Menu Hamburguer */}
+              <div className="p-2 rounded-xl bg-slate-900/90 border border-slate-800 shadow-inner shrink-0">
+                {user ? (
+                  <div className="flex items-center justify-between gap-2.5">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className="w-7 h-7 rounded-lg overflow-hidden bg-slate-800 border border-blue-500/50 shrink-0">
+                        <img src={user.avatar} alt={user.name} className="w-full h-full object-cover" />
+                      </div>
+                      <div className="min-w-0">
+                        <span className="block text-xs font-bold text-white truncate">{user.name}</span>
+                        <span className="block text-[9px] text-blue-400 font-mono truncate">{user.email}</span>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setIsTermsModalOpen(true);
+                        setIsMenuOpen(false);
+                      }}
+                      className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[10px] font-bold text-slate-300 border border-slate-700 cursor-pointer shrink-0"
+                    >
+                      Conta
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => {
+                      setIsTermsModalOpen(true);
+                      setIsMenuOpen(false);
+                    }}
+                    className="w-full py-1.5 px-2.5 bg-white hover:bg-slate-100 text-slate-900 rounded-xl text-xs font-extrabold flex items-center justify-center gap-2 cursor-pointer shadow-sm transition"
+                  >
+                    <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24">
+                      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+                      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+                    </svg>
+                    <span>Entrar com Google</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Itens do Menu Diretos e Essenciais (Sem Descrições e Sem Scroll) */}
+              <div className="space-y-1 sm:space-y-1.5">
                 <button
                   onClick={() => {
-                    setAppMode('hub');
+                    setInitialSearchQuery('');
+                    setAppMode('downloader');
                     setIsMenuOpen(false);
                   }}
-                  className={`w-full p-3 rounded-xl text-left text-xs font-bold transition flex items-center gap-3 cursor-pointer ${
-                    appMode === 'hub'
+                  className={`w-full px-3 py-2 rounded-xl text-left text-xs font-bold transition flex items-center justify-between cursor-pointer ${
+                    appMode === 'downloader'
                       ? 'bg-emerald-600 text-white shadow-md'
-                      : 'text-slate-300 hover:bg-slate-900 bg-slate-900/60 border border-slate-850'
+                      : 'text-slate-200 hover:bg-slate-900 bg-slate-900/70 border border-slate-800 hover:border-emerald-500/40'
                   }`}
                 >
-                  <Home className="w-4 h-4 text-emerald-300" />
-                  <div>
-                    <span className="block font-bold">Início</span>
-                    <span className="text-[10px] text-slate-400 font-normal">Hub de escolha</span>
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Search className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span className="truncate">Buscar Músicas & Álbuns</span>
                   </div>
                 </button>
 
                 <button
                   onClick={() => {
-                    setAppMode('downloader');
+                    setAppMode('charts');
                     setIsMenuOpen(false);
                   }}
-                  className={`w-full p-3 rounded-xl text-left text-xs font-bold transition flex items-center gap-3 cursor-pointer ${
-                    appMode === 'downloader'
+                  className={`w-full px-3 py-2 rounded-xl text-left text-xs font-bold transition flex items-center justify-between cursor-pointer ${
+                    appMode === 'charts'
                       ? 'bg-emerald-600 text-white shadow-md'
-                      : 'text-slate-300 hover:bg-slate-900 bg-slate-900/60 border border-slate-850'
+                      : 'text-slate-200 hover:bg-slate-900 bg-slate-900/70 border border-slate-800 hover:border-amber-500/40'
                   }`}
                 >
-                  <Search className="w-4 h-4 text-emerald-300" />
-                  <div>
-                    <span className="block font-bold">Buscar Álbuns e Músicas</span>
-                    <span className="text-[10px] text-slate-400 font-normal">Discografias e player completo</span>
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Flame className="w-4 h-4 text-amber-400 shrink-0" />
+                    <span className="truncate">Músicas Mais Ouvidas</span>
                   </div>
+                  <span className="px-1.5 py-0.5 rounded-full text-[9px] bg-amber-500/20 text-amber-300 font-mono font-bold shrink-0">
+                    Top 50
+                  </span>
                 </button>
 
                 <button
@@ -1089,22 +1235,39 @@ function AudioFlixMain() {
                     setAppMode('playlists');
                     setIsMenuOpen(false);
                   }}
-                  className={`w-full p-3 rounded-xl text-left text-xs font-bold transition flex items-center gap-3 cursor-pointer ${
+                  className={`w-full px-3 py-2 rounded-xl text-left text-xs font-bold transition flex items-center justify-between cursor-pointer ${
                     appMode === 'playlists'
                       ? 'bg-rose-600 text-white shadow-md'
-                      : 'text-slate-300 hover:bg-slate-900 bg-slate-900/60 border border-slate-850'
+                      : 'text-slate-200 hover:bg-slate-900 bg-slate-900/70 border border-slate-800 hover:border-rose-500/40'
                   }`}
                 >
-                  <Heart className="w-4 h-4 text-rose-400 fill-rose-500/30" />
-                  <div className="flex-1">
-                    <span className="block font-bold">Minhas Playlists & Favoritas</span>
-                    <span className="text-[10px] text-slate-400 font-normal">
-                      {favorites.length} favoritas • {playlists.length} playlists
-                    </span>
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Heart className="w-4 h-4 text-rose-400 fill-rose-500/30 shrink-0" />
+                    <span className="truncate">Minhas Playlists & Favoritas</span>
                   </div>
                   {favorites.length > 0 && (
-                    <span className="px-2 py-0.5 rounded-full text-[10px] bg-rose-500/20 text-rose-300 font-mono font-bold">
+                    <span className="px-1.5 py-0.5 rounded-full text-[9px] bg-rose-500/20 text-rose-300 font-mono font-bold shrink-0">
                       {favorites.length}
+                    </span>
+                  )}
+                </button>
+
+                {/* Opção Lista de Reprodução / Fila no Menu Hambúrguer */}
+                <button
+                  onClick={() => {
+                    setIsQueueOpen(true);
+                    setIsMenuOpen(false);
+                  }}
+                  className="w-full px-3 py-2 rounded-xl text-left text-xs font-bold transition flex items-center justify-between cursor-pointer text-slate-200 hover:bg-slate-900 bg-slate-900/70 border border-slate-800 hover:border-emerald-500/40"
+                  title="Abrir Lista de Reprodução e organizar ordem das músicas"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <ListMusic className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span className="truncate">Lista de Reprodução (Fila)</span>
+                  </div>
+                  {playbackQueue.length > 0 && (
+                    <span className="px-1.5 py-0.5 rounded-full text-[9px] bg-emerald-500/20 text-emerald-300 font-mono font-bold shrink-0">
+                      {playbackQueue.length}
                     </span>
                   )}
                 </button>
@@ -1114,21 +1277,18 @@ function AudioFlixMain() {
                     setAppMode('downloads');
                     setIsMenuOpen(false);
                   }}
-                  className={`w-full p-3 rounded-xl text-left text-xs font-bold transition flex items-center gap-3 cursor-pointer ${
+                  className={`w-full px-3 py-2 rounded-xl text-left text-xs font-bold transition flex items-center justify-between cursor-pointer ${
                     appMode === 'downloads'
                       ? 'bg-emerald-600 text-white shadow-md'
-                      : 'text-slate-300 hover:bg-slate-900 bg-slate-900/60 border border-slate-850'
+                      : 'text-slate-200 hover:bg-slate-900 bg-slate-900/70 border border-slate-800 hover:border-emerald-500/40'
                   }`}
                 >
-                  <Download className="w-4 h-4 text-emerald-400" />
-                  <div className="flex-1">
-                    <span className="block font-bold">Meus Downloads</span>
-                    <span className="text-[10px] text-slate-400 font-normal">
-                      {downloads.length} arquivos salvos no dispositivo
-                    </span>
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Download className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span className="truncate">Meus Downloads</span>
                   </div>
                   {downloads.length > 0 && (
-                    <span className="px-2 py-0.5 rounded-full text-[10px] bg-emerald-500/20 text-emerald-300 font-mono font-bold">
+                    <span className="px-1.5 py-0.5 rounded-full text-[9px] bg-emerald-500/20 text-emerald-300 font-mono font-bold shrink-0">
                       {downloads.length}
                     </span>
                   )}
@@ -1139,14 +1299,24 @@ function AudioFlixMain() {
                     setIsDrawerOpen(true);
                     setIsMenuOpen(false);
                   }}
-                  className="w-full p-3 rounded-xl text-left text-xs font-bold transition flex items-center gap-3 cursor-pointer text-slate-300 hover:bg-slate-900 bg-slate-900/60 border border-slate-850"
+                  className="w-full px-3 py-2 rounded-xl text-left text-xs font-bold transition flex items-center justify-between cursor-pointer text-slate-200 hover:bg-slate-900 bg-slate-900/70 border border-slate-800 hover:border-teal-500/40"
                 >
-                  <Download className="w-4 h-4 text-teal-400" />
-                  <div className="flex-1">
-                    <span className="block font-bold">Fila de Downloads & Pasta</span>
-                    <span className="text-[10px] text-slate-400 font-normal">
-                      Progresso em tempo real e escolha da pasta de destino
-                    </span>
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Download className="w-4 h-4 text-teal-400 shrink-0" />
+                    <span className="truncate">Fila de Downloads & Pasta</span>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => {
+                    deviceAudioInputRef.current?.click();
+                    setIsMenuOpen(false);
+                  }}
+                  className="w-full px-3 py-2 rounded-xl text-left text-xs font-bold transition flex items-center justify-between cursor-pointer text-slate-200 hover:bg-slate-900 bg-slate-900/70 border border-slate-800 hover:border-amber-500/40"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Play className="w-4 h-4 text-amber-400 fill-current shrink-0" />
+                    <span className="truncate">Tocar do Dispositivo / Pendrive</span>
                   </div>
                 </button>
 
@@ -1155,29 +1325,43 @@ function AudioFlixMain() {
                     setAppMode('local_workflow');
                     setIsMenuOpen(false);
                   }}
-                  className={`w-full p-3 rounded-xl text-left text-xs font-bold transition flex items-center gap-3 cursor-pointer ${
+                  className={`w-full px-3 py-2 rounded-xl text-left text-xs font-bold transition flex items-center justify-between cursor-pointer ${
                     appMode === 'local_workflow'
                       ? 'bg-emerald-600 text-white shadow-md'
-                      : 'text-slate-300 hover:bg-slate-900 bg-slate-900/60 border border-slate-850'
+                      : 'text-slate-200 hover:bg-slate-900 bg-slate-900/70 border border-slate-800 hover:border-amber-500/40'
                   }`}
                 >
-                  <FolderUp className="w-4 h-4 text-amber-400" />
-                  <div className="flex-1">
-                    <span className="block font-bold">Reparar Pendrive</span>
-                    <span className="text-[10px] text-slate-400 font-normal">Fluxo em 4 etapas</span>
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <FolderUp className="w-4 h-4 text-amber-400 shrink-0" />
+                    <span className="truncate">Reparar Pendrive</span>
                   </div>
                   {totalCount > 0 && (
-                    <span className="px-2 py-0.5 rounded-full text-[10px] bg-emerald-500/20 text-emerald-300 font-mono font-bold">
+                    <span className="px-1.5 py-0.5 rounded-full text-[9px] bg-emerald-500/20 text-emerald-300 font-mono font-bold shrink-0">
                       {totalCount}
                     </span>
                   )}
                 </button>
               </div>
+
+              {/* Input Invisível para Tocar Arquivos do Dispositivo / Pendrive */}
+              <input
+                type="file"
+                ref={deviceAudioInputRef}
+                onChange={(e) => {
+                  if (e.target.files && e.target.files.length > 0) {
+                    handlePlayDeviceAudioFiles(Array.from(e.target.files));
+                    e.target.value = '';
+                  }
+                }}
+                multiple
+                accept="audio/*,.mp3,.m4a,.flac,.wav,.aac,.ogg,.opus,.wma"
+                className="hidden"
+              />
             </div>
 
-            {/* Rodapé do Menu */}
-            <div className="pt-4 border-t border-slate-800/80 text-center">
-              <span className="text-[11px] text-slate-500">
+            {/* Rodapé do Menu Compacto */}
+            <div className="pt-2 border-t border-slate-800/80 text-center shrink-0">
+              <span className="text-[10px] text-slate-500">
                 AudioFlix • <strong className="text-emerald-400">by Tasso</strong>
               </span>
             </div>
@@ -1273,40 +1457,64 @@ function AudioFlixMain() {
       )}
 
       {/* 3. CONTEÚDO PRINCIPAL */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 w-full flex-1">
+      <main className={`max-w-7xl mx-auto px-3 sm:px-6 w-full flex-1 ${
+        appMode === 'hub' ? 'py-0.5 sm:py-1 flex flex-col justify-center items-center overflow-hidden min-h-0' : 'py-6'
+      }`}>
 
         {appMode === 'hub' ? (
           <InitialHubSelector
             onSelectSearch={(query) => {
-              if (query) setInitialSearchQuery(query);
+              setInitialSearchQuery(query?.trim() || '');
               setAppMode('downloader');
             }}
             onSelectRepair={() => setAppMode('local_workflow')}
             onSelectPlaylists={() => setAppMode('playlists')}
             onSelectDownloads={() => setAppMode('downloads')}
+            onSelectCharts={() => setAppMode('charts')}
             onLoadSamples={handleLoadSamples}
+            onPlayLocalFiles={handlePlayDeviceAudioFiles}
           />
         ) : appMode === 'downloader' ? (
           <YouTubeMusicDownloader
             onSwitchToLocalWorkflow={() => setAppMode('local_workflow')}
-            onPlayFullTrack={(track, list) => {
-              setActivePlayerTrack(track);
-              if (list) setPlayerPlaylist(list);
-            }}
+            onPlayFullTrack={handlePlayTrackRequest}
+            onAddToQueue={(track) => handleAddToPlayerPlaylist(track, false)}
             activePlayingTrackId={activePlayerTrack?.id}
-            isPlayingFullTrack={true}
+            isPlayingFullTrack={isPlayerPlaying}
             onOpenDownloadModal={(track) => setDownloadModalTrack(track)}
             initialSearchQuery={initialSearchQuery}
           />
+        ) : appMode === 'charts' ? (
+          <div className="max-w-6xl mx-auto px-4 py-6">
+            <TopChartsView
+              onPlayTrack={handlePlayTrackRequest}
+              onAddToQueue={(track) => handleAddToPlayerPlaylist(track, false)}
+              onOpenDownloadModal={(track) => setDownloadModalTrack(track)}
+              activePlayingTrackId={activePlayerTrack?.id}
+              isPlayingFullTrack={isPlayerPlaying}
+            />
+          </div>
         ) : appMode === 'downloads' ? (
           <DownloadsHistoryView
-            onPlayTrack={(track) => setActivePlayerTrack(track)}
+            onPlayTrack={handlePlayTrackRequest}
             onExploreSongs={() => setAppMode('downloader')}
           />
         ) : appMode === 'playlists' ? (
           <PlaylistsManagerView
             onPlayTrack={(track, list) => {
-              setActivePlayerTrack({
+              // Análise rápida: se for faixa local, verifica se está disponível neste dispositivo
+              const isDevice = Boolean(
+                track.isDeviceAudio ||
+                String(track.id || '').startsWith('device_') ||
+                track.artist === 'Dispositivo / Pendrive' ||
+                (track.previewUrl && (track.previewUrl.startsWith('blob:') || track.previewUrl.startsWith('data:')))
+              );
+              if (isDevice && (!track.previewUrl || (!track.previewUrl.startsWith('blob:') && !track.previewUrl.startsWith('data:')))) {
+                showToast(`⚠️ Faixa local "${track.title}" não disponível neste dispositivo.`);
+                return;
+              }
+
+              handlePlayTrackRequest({
                 id: track.id,
                 title: track.title,
                 artist: track.artist,
@@ -1314,22 +1522,9 @@ function AudioFlixMain() {
                 artwork: track.artwork,
                 durationSeconds: track.durationSeconds,
                 youtubeId: track.youtubeId,
-                previewUrl: track.previewUrl
-              });
-              if (list) {
-                setPlayerPlaylist(
-                  list.map((item: any) => ({
-                    id: item.id,
-                    title: item.title,
-                    artist: item.artist,
-                    album: item.album,
-                    artwork: item.artwork,
-                    durationSeconds: item.durationSeconds,
-                    youtubeId: item.youtubeId,
-                    previewUrl: item.previewUrl
-                  }))
-                );
-              }
+                previewUrl: track.previewUrl,
+                isDeviceAudio: track.isDeviceAudio
+              }, list ? sanitizePlayableTracks(list) : undefined);
             }}
             onExploreSongs={() => setAppMode('downloader')}
           />
@@ -2483,22 +2678,52 @@ function AudioFlixMain() {
 
       </main>
 
-      {/* 5. RODAPÉ */}
-      <footer className="border-t border-slate-800/80 bg-slate-950/90 py-5 px-4 mt-12 pb-24 text-slate-400">
-        <div className="max-w-7xl mx-auto flex items-center justify-between gap-4 text-xs">
-          <div className="flex items-center gap-2">
-            <span className="font-extrabold text-white text-base">AudioFlix</span>
+      {/* 5. RODAPÉ RESPONSIVO E CENTRALIZADO */}
+      <footer className={`border-t border-slate-800/80 bg-slate-950/95 px-4 text-slate-400 ${
+        appMode === 'hub'
+          ? 'py-1 sm:py-1.5 mt-auto text-xs shrink-0'
+          : `py-6 mt-6 ${activePlayerTrack ? 'pb-28' : 'pb-8'}`
+      }`}>
+        <div className={`max-w-2xl mx-auto flex flex-col items-center justify-center text-center ${appMode === 'hub' ? 'gap-0.5' : 'gap-3'}`}>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <span className="font-extrabold text-white text-sm sm:text-base tracking-tight">AudioFlix</span>
             <span className="text-slate-600">•</span>
-            <span className="text-emerald-400 font-bold uppercase tracking-wider bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 text-[11px]">
+            <span className="text-emerald-400 font-bold uppercase tracking-wider bg-emerald-500/10 px-2 py-0.2 rounded-full border border-emerald-500/20 text-[10px]">
               by Tasso
             </span>
+            <span className="text-slate-600">•</span>
+            <span className="text-[11px] text-slate-400">Central de Música em Alta Fidelidade</span>
           </div>
 
-          <div className="text-slate-500 font-mono text-[11px]">
-            AudioFlix © 2026 • <span className="text-emerald-400 font-semibold">by Tasso</span>
+          {appMode !== 'hub' && (
+            <p className="text-xs text-slate-500 max-w-lg mx-auto leading-relaxed">
+              Áudio contínuo em segundo plano, transições suaves entre faixas sem cortes, sincronização em nuvem e suporte a reprodução com tela bloqueada.
+            </p>
+          )}
+
+          <div className="flex flex-wrap items-center justify-center gap-3 text-xs text-slate-400 pt-0.5">
+            <button
+              onClick={() => setIsTermsModalOpen(true)}
+              className="text-slate-400 hover:text-emerald-400 transition cursor-pointer underline text-[10px]"
+            >
+              Termos de Uso & Sincronização em Nuvem
+            </button>
+            <span className="text-slate-700">•</span>
+            <span className="text-slate-500 font-mono text-[10px]">
+              AudioFlix © 2026 • <span className="text-emerald-400 font-semibold">by Tasso</span>
+            </span>
           </div>
         </div>
       </footer>
+
+      {/* MODAL DE TERMOS DE USO E LOGIN COM CONTA YOUTUBE / GOOGLE */}
+      <TermsAndLoginModal
+        isOpen={isTermsModalOpen}
+        onClose={() => setIsTermsModalOpen(false)}
+      />
+
+      {/* BOTÃO FLUTUANTE PARA SUBIR AO TOPO DA PÁGINA */}
+      <ScrollToTopButton />
 
       {/* 6. FLASH SCREEN (SPLASH INICIAL) */}
       {showSplash && (
@@ -2512,6 +2737,8 @@ function AudioFlixMain() {
           playlist={playerPlaylist}
           onTrackChange={(track) => setActivePlayerTrack(track)}
           onClose={() => setActivePlayerTrack(null)}
+          onPlayStateChange={(playing) => setIsPlayerPlaying(playing)}
+          registerTogglePlay={(fn) => { togglePlayerPlayRef.current = fn; }}
           onAddToLocalRepair={async (fileInfo) => {
             const file = new File([fileInfo.blob || new Blob([fileInfo.name])], fileInfo.name, { type: 'audio/mpeg' });
             await addFilesToQueue([file]);
@@ -2523,6 +2750,7 @@ function AudioFlixMain() {
       {/* 7.1 FILA DE REPRODUÇÃO EM DISPOSITIVOS MÓVEIS */}
       <MobileQueueDrawer
         currentTrack={activePlayerTrack}
+        playlist={playerPlaylist}
         onPlayTrack={(track) => setActivePlayerTrack(track)}
       />
 

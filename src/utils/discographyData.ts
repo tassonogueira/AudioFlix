@@ -311,7 +311,7 @@ export const JORGE_E_MATEUS_CANONICAL: {
       genre: 'Sertanejo',
       category: 'single',
       categoryLabel: 'Música Avulsa / Single de Transição',
-      description: 'O megahit bem-humorado que conquistou o topo do Spotify Brasil em 2019.',
+      description: 'O megahit bem-humorado que conquistou o topo das paradas musicais no Brasil em 2019.',
       isStandalone: true
     },
     {

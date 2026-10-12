@@ -1,0 +1,40 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile authenticated with Google Account",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "User unique ID from Google Auth" },
+        "displayName": { "type": "string", "description": "Google user display name" },
+        "email": { "type": "string", "description": "User Google email address" },
+        "photoURL": { "type": "string", "description": "User Google avatar image URL" },
+        "updatedAt": { "type": "string", "description": "Timestamp of last update" }
+      },
+      "required": ["uid", "email"]
+    },
+    "UserMusicData": {
+      "title": "UserMusicData",
+      "description": "User synchronized favorites, playlists and downloads across devices",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner user ID" },
+        "favorites": { "type": "string", "description": "Serialized list of favorite tracks" },
+        "playlists": { "type": "string", "description": "Serialized playlists" },
+        "downloads": { "type": "string", "description": "Serialized download history" },
+        "updatedAt": { "type": "string", "description": "Timestamp of last sync" }
+      },
+      "required": ["userId"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Private user profile"
+    },
+    "/users/{userId}/musicData/main": {
+      "schema": "UserMusicData",
+      "description": "Private user music libraries and synchronization data"
+    }
+  }
+}
