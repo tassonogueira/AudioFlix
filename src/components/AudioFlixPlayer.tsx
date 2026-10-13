@@ -502,6 +502,9 @@ export default function AudioFlixPlayer({
       transitionTimeoutRef.current = null;
     }
 
+    const t0Transition = performance.now();
+    console.log(`[PERF FRONTEND] [${new Date().toISOString()}] Clique / Início da transição de faixa: "${targetTrack.title}" - ${targetTrack.artist} (ID: ${targetTrack.id}, YT: ${targetTrack.youtubeId || 'none'})`);
+
     // Interrompe imediatamente a faixa anterior para conexão e carregamento instantâneo
     if (currentDeck) {
       currentDeck.pause();
@@ -513,7 +516,23 @@ export default function AudioFlixPlayer({
       nextDeck.currentTime = 0; // Garante início estritamente no 0:00 sem cortes
       nextDeck.volume = targetVolume;
       nextDeck.src = streamUrl;
+      console.log(`[PERF FRONTEND] [+${(performance.now() - t0Transition).toFixed(1)}ms] src do <audio> definido para: ${streamUrl}`);
       nextDeck.load();
+
+      // Instrumentação de eventos de performance no Deck Ativo
+      const onPerfLoadedMetadata = () => {
+        console.log(`[PERF FRONTEND] [+${(performance.now() - t0Transition).toFixed(1)}ms] Evento 'loadedmetadata' disparou. Duração: ${nextDeck.duration}s`);
+      };
+      const onPerfCanPlay = () => {
+        console.log(`[PERF FRONTEND] [+${(performance.now() - t0Transition).toFixed(1)}ms] Evento 'canplay' disparou. Buffer suficiente para começar.`);
+      };
+      const onPerfPlaying = () => {
+        console.log(`[PERF FRONTEND] [+${(performance.now() - t0Transition).toFixed(1)}ms] Evento 'playing' disparou! O áudio está TOCANDO agora no navegador!`);
+      };
+
+      nextDeck.addEventListener('loadedmetadata', onPerfLoadedMetadata, { once: true });
+      nextDeck.addEventListener('canplay', onPerfCanPlay, { once: true });
+      nextDeck.addEventListener('playing', onPerfPlaying, { once: true });
 
       // Monitor de primeiro frame sonoro: garante que a reprodução inicie rigorosamente em 0:00
       const onFirstPlay = () => {
@@ -524,6 +543,7 @@ export default function AudioFlixPlayer({
       nextDeck.addEventListener('playing', onFirstPlay, { once: true });
 
       nextDeck.play().then(() => {
+        console.log(`[PERF FRONTEND] [+${(performance.now() - t0Transition).toFixed(1)}ms] nextDeck.play() Promise RESOLVIDA com sucesso.`);
         setIsAudioBuffering(false);
         setIsTransitioning(false);
         isTransitioningRef.current = false;
@@ -531,7 +551,7 @@ export default function AudioFlixPlayer({
         consecutiveErrorsRef.current = 0;
         prepareNextTrack();
       }).catch((err) => {
-        console.warn('[Player Audio] Início aguardando interação:', err);
+        console.warn(`[PERF FRONTEND] [+${(performance.now() - t0Transition).toFixed(1)}ms] nextDeck.play() rejeitado/aguardando:`, err);
         if (nextDeck) nextDeck.volume = targetVolume;
       });
     }
@@ -725,7 +745,11 @@ export default function AudioFlixPlayer({
         ref={deckARef}
         preload="auto"
         playsInline
+        onLoadedMetadata={(e) => {
+          console.log(`[PERF FRONTEND DECK A] onLoadedMetadata disparado. Duração: ${e.currentTarget.duration}s`);
+        }}
         onCanPlay={() => {
+          console.log('[PERF FRONTEND DECK A] onCanPlay disparado.');
           if (activeDeckRef.current === 'A') {
             setIsAudioBuffering(false);
             if (isPlaying) {
@@ -734,6 +758,7 @@ export default function AudioFlixPlayer({
           }
         }}
         onPlaying={() => {
+          console.log('[PERF FRONTEND DECK A] onPlaying disparado.');
           if (activeDeckRef.current === 'A') {
             setIsAudioBuffering(false);
             setHasAudioStarted(true);
@@ -790,7 +815,11 @@ export default function AudioFlixPlayer({
         ref={deckBRef}
         preload="auto"
         playsInline
+        onLoadedMetadata={(e) => {
+          console.log(`[PERF FRONTEND DECK B] onLoadedMetadata disparado. Duração: ${e.currentTarget.duration}s`);
+        }}
         onCanPlay={() => {
+          console.log('[PERF FRONTEND DECK B] onCanPlay disparado.');
           if (activeDeckRef.current === 'B') {
             setIsAudioBuffering(false);
             if (isPlaying) {
@@ -799,6 +828,7 @@ export default function AudioFlixPlayer({
           }
         }}
         onPlaying={() => {
+          console.log('[PERF FRONTEND DECK B] onPlaying disparado.');
           if (activeDeckRef.current === 'B') {
             setIsAudioBuffering(false);
             setHasAudioStarted(true);

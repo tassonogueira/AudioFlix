@@ -1,5 +1,5 @@
 /**
- * AudioFix - Gerador de Amostras de Teste para Simulação
+ * AudioFlix - Gerador de Amostras de Teste para Simulação
  * 
  * Cria arquivos sintetizados simulando:
  * 1. Arquivo que JÁ É MP3, mas com extensão .txt (requer apenas reparo de extensão sem re-encode)

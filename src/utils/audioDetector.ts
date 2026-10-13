@@ -1,5 +1,5 @@
 /**
- * AudioFix - Detector de Formato Real por Magic Numbers (Bytes de Cabeçalho)
+ * AudioFlix - Detector de Formato Real por Magic Numbers (Bytes de Cabeçalho)
  * 
  * Permite identificar o codec/container real de arquivos de áudio cujos nomes
  * ou extensões foram corrompidos no pendrive (ex: "musica.txt", "faixa.unknown", "som.dat").

@@ -1,5 +1,5 @@
 /**
- * AudioFix - Modal / Painel Interativo de Teste e Simulação de Renomeação
+ * AudioFlix - Modal / Painel Interativo de Teste e Simulação de Renomeação
  * 
  * Permite ao usuário simular, testar e pré-visualizar em tempo real como
  * as faixas serão renomeadas e como as extensões serão padronizadas com base

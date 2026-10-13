@@ -1,5 +1,5 @@
 /**
- * AudioFix - Módulo Inteligente de Renomeação e Limpeza de Faixas
+ * AudioFlix - Módulo Inteligente de Renomeação e Limpeza de Faixas
  * 
  * Permite corrigir extensões de arquivos corrompidos (.txt, .unknown, .dat)
  * para o formato real (.mp3, .wav, etc.) sem perda de qualidade sonora,

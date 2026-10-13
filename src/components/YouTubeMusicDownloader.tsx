@@ -335,6 +335,7 @@ export default function YouTubeMusicDownloader({
     playlistContext?: Array<any>
   ) => {
     const streamPreview = track.previewUrl || undefined;
+    console.log(`[PERF FRONTEND CLICK] [${new Date().toISOString()}] Usuário clicou no play da música: "${track.title}" - ${track.artist} (id: ${track.id}, ytId: ${track.youtubeId || (typeof track.id === 'string' && track.id.length === 11 ? track.id : 'none')})`);
 
     if (onPlayFullTrack) {
       const formattedPlaylist = playlistContext

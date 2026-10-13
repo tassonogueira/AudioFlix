@@ -1,5 +1,5 @@
 /**
- * AudioFix - Gerador do Código HTML Único (Standalone)
+ * AudioFlix - Gerador do Código HTML Único (Standalone)
  * 
  * Contém todo o HTML5, Tailwind CSS e Vanilla JavaScript unificados,
  * com comentários detalhados sobre FFmpeg.FS e FFmpeg.run, pronto para

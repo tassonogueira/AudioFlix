@@ -29,7 +29,7 @@ export default function OfflineBanner() {
       <div className="flex items-center gap-2 max-w-4xl mx-auto">
         <WifiOff className="w-4 h-4 animate-pulse shrink-0 text-amber-200" />
         <span>
-          Sem conexão com a internet. Verifique sua rede móvel ou Wi-Fi para buscar e baixar músicas.
+          Sem conexão com a internet. Verifique sua rede móvel ou Wi-Fi.
         </span>
       </div>
 

@@ -1,7 +1,7 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import { Readable, PassThrough } from 'stream';
 import { pipeline } from 'stream/promises';
@@ -469,10 +469,13 @@ async function downloadFullTrackAsMp3(
   const outPattern = `${tempBase}.%(ext)s`;
   const finalFile = `${tempBase}.${ext}`;
 
-  // Configurações do yt-dlp
+  // Configurações do yt-dlp com buffer e chunking otimizados
   const ytArgs: string[] = isVideo
     ? [
         '--js-runtimes', 'node:/usr/local/bin/node',
+        '-4',
+        '--http-chunk-size', '10485760',
+        '--buffer-size', '16K',
         '-f', 'bestvideo+bestaudio/best',
         '--recode-video', 'mp4',
         '--no-playlist',
@@ -482,6 +485,9 @@ async function downloadFullTrackAsMp3(
       ]
     : [
         '--js-runtimes', 'node:/usr/local/bin/node',
+        '-4',
+        '--http-chunk-size', '10485760',
+        '--buffer-size', '16K',
         '-f', 'bestaudio/best',
         '-x',
         '--audio-format', 'mp3',
@@ -494,13 +500,35 @@ async function downloadFullTrackAsMp3(
 
   // Se houver cookies.txt salvo, injeta nas chamadas do yt-dlp
   const cookiesPath = path.resolve(process.cwd(), 'cookies.txt');
-  if (fs.existsSync(cookiesPath) && fs.statSync(cookiesPath).size > 50) {
+  const hasValidCookies = fs.existsSync(cookiesPath) && fs.statSync(cookiesPath).size > 50;
+  if (hasValidCookies) {
     ytArgs.unshift('--cookies', cookiesPath);
     console.log('[YouTube Engine] Usando cookies.txt autenticado');
   }
 
-  // ESTRATÉGIA 1 (PRIORIDADE ABSOLUTA): Extração direta do vídeo exato via API Backend
-  // Isso resolve os bloqueios de datacenter e garante fidelidade 100% ao vídeo do card sem sair do app
+  // ESTRATÉGIA 1 (PRIORIDADE ALTA COM COOKIES): Download direto do YouTube por Video ID via yt-dlp
+  // Com cookies válidos, a extração direta do YouTube é executada em ~1 a 3 segundos
+  if (videoId && hasValidCookies) {
+    console.log(`[YouTube Engine] Tentando extração direta autenticada yt-dlp (VideoID: ${videoId})...`);
+    const ok = await runDownloadAttempt(
+      ytArgs,
+      `https://www.youtube.com/watch?v=${videoId}`,
+      finalFile,
+      tempBase,
+      isVideo,
+      quality,
+      35000
+    );
+
+    if (ok && fs.existsSync(finalFile)) {
+      const stat = fs.statSync(finalFile);
+      console.log(`[YouTube Engine] Sucesso com YouTube Direct autenticado yt-dlp! Tamanho: ${(stat.size / (1024 * 1024)).toFixed(2)} MB`);
+      try { fs.copyFileSync(finalFile, cachedFilePath); } catch {}
+      return { filePath: finalFile, safeFilename, size: stat.size, isVideo };
+    }
+  }
+
+  // ESTRATÉGIA 2: Extração direta via API Backend (Loader.to / Conversor Externo)
   if (videoId) {
     console.log(`[YouTube Engine] Tentando API de conversão direta para VideoID: ${videoId}...`);
     const okApi = await downloadViaExternalConverter(videoId, isVideo, quality, finalFile);
@@ -522,7 +550,23 @@ async function downloadFullTrackAsMp3(
       const searchRes = await yts(ytQuery);
       const topVideo = searchRes.videos?.[0];
       if (topVideo?.videoId) {
-        console.log(`[YouTube Engine] Vídeo do YouTube localizado: "${topVideo.title}" (${topVideo.videoId}). Convertendo...`);
+        console.log(`[YouTube Engine] Vídeo do YouTube localizado: "${topVideo.title}" (${topVideo.videoId}). Baixando...`);
+        if (hasValidCookies) {
+          const ok = await runDownloadAttempt(
+            ytArgs,
+            `https://www.youtube.com/watch?v=${topVideo.videoId}`,
+            finalFile,
+            tempBase,
+            isVideo,
+            quality,
+            35000
+          );
+          if (ok && fs.existsSync(finalFile)) {
+            const stat = fs.statSync(finalFile);
+            try { fs.copyFileSync(finalFile, cachedFilePath); } catch {}
+            return { filePath: finalFile, safeFilename, size: stat.size, isVideo };
+          }
+        }
         const okApi = await downloadViaExternalConverter(topVideo.videoId, isVideo, quality, finalFile);
         if (okApi && fs.existsSync(finalFile)) {
           const stat = fs.statSync(finalFile);
@@ -538,9 +582,9 @@ async function downloadFullTrackAsMp3(
     }
   }
 
-  // ESTRATÉGIA 2: Download direto do YouTube por Video ID via yt-dlp (com suporte a cookies se logado)
+  // ESTRATÉGIA 3: Download direto do YouTube por Video ID via yt-dlp (Fallback)
   if (videoId) {
-    console.log(`[YouTube Engine] Tentando extração local yt-dlp (VideoID: ${videoId})...`);
+    console.log(`[YouTube Engine] Tentando extração local yt-dlp fallback (VideoID: ${videoId})...`);
     const ok = await runDownloadAttempt(
       ytArgs,
       `https://www.youtube.com/watch?v=${videoId}`,
@@ -551,7 +595,7 @@ async function downloadFullTrackAsMp3(
       45000
     );
 
-    if (ok) {
+    if (ok && fs.existsSync(finalFile)) {
       const stat = fs.statSync(finalFile);
       console.log(`[YouTube Engine] Sucesso com YouTube Direct yt-dlp! Tamanho: ${(stat.size / (1024 * 1024)).toFixed(2)} MB`);
       try { fs.copyFileSync(finalFile, cachedFilePath); } catch {}
@@ -878,12 +922,15 @@ async function resolveDirectAudioStreamUrl(videoId: string, title?: string, arti
     return cached.url;
   }
 
-  // 1. Corrida Competitiva: yt-dlp ultrarrápido (IPv4 forçado com clients resilientes) + API de Conversão em Paralelo
+  // 1. Resolução ultrarrápida com yt-dlp (com suporte a cookies e chunking otimizado)
   const ytDlpPromise = (async (): Promise<string | null> => {
     try {
       const cookiesPath = path.resolve(process.cwd(), 'cookies.txt');
       const args = [
+        '--js-runtimes', 'node:/usr/local/bin/node',
         '-4',
+        '--http-chunk-size', '10485760',
+        '--buffer-size', '16K',
         '-g',
         '-f', 'ba/b/140/251/18',
         '--no-playlist',
@@ -895,7 +942,7 @@ async function resolveDirectAudioStreamUrl(videoId: string, title?: string, arti
       args.push(`https://www.youtube.com/watch?v=${videoId}`);
 
       const { stdout } = await execFilePromise(ytDlpPath, args, {
-        timeout: 4500,
+        timeout: 6500,
         env: { ...process.env, PYTHONWARNINGS: 'ignore' }
       });
       const urlMatch = stdout.match(/https:\/\/[^\s"'\n\r]+/);
@@ -919,10 +966,10 @@ async function resolveDirectAudioStreamUrl(videoId: string, title?: string, arti
         '--no-warnings',
         '--ignore-errors',
         '--max-downloads', '1',
-        `scsearch3:${q}`
+        `scsearch1:${q}`
       ];
       const { stdout } = await execFilePromise(ytDlpPath, args, {
-        timeout: 4200,
+        timeout: 3000,
         env: { ...process.env, PYTHONWARNINGS: 'ignore' }
       });
       const urlMatch = stdout.match(/https:\/\/[^\s"'\n\r]+/);
@@ -940,7 +987,11 @@ async function resolveDirectAudioStreamUrl(videoId: string, title?: string, arti
   const raceResult = await new Promise<string | null>((resolve) => {
     let settledCount = 0;
     let hasResolved = false;
-    const totalCompetitors = (title || artist) ? 3 : 2;
+    const cookiesPath = path.resolve(process.cwd(), 'cookies.txt');
+    const hasCookies = fs.existsSync(cookiesPath) && fs.statSync(cookiesPath).size > 50;
+
+    // Se temos cookies autenticados, ytDlp é o campeão e resolve em ~1.5s
+    const totalCompetitors = hasCookies ? 2 : ((title || artist) ? 3 : 2);
 
     const check = (url: string | null) => {
       settledCount++;
@@ -954,7 +1005,7 @@ async function resolveDirectAudioStreamUrl(videoId: string, title?: string, arti
 
     ytDlpPromise.then(check).catch(() => check(null));
     converterPromise.then(check).catch(() => check(null));
-    if (title || artist) {
+    if (!hasCookies && (title || artist)) {
       soundCloudPromise.then(check).catch(() => check(null));
     }
   });
@@ -1003,20 +1054,22 @@ app.get('/api/music/cached-status', (req, res) => {
 
     const { cleanArtist, cleanSong } = extractCleanArtistAndSong(title, artist);
     const standardKey = getCacheKey(cleanArtist, cleanSong, `${videoId || ''}_192_aud`);
-    let cachedFilePath = path.join(CACHE_DIR, `${standardKey}.mp3`);
-
     const checkDirs = [CACHE_DIR, LEGACY_CACHE_DIR].filter(d => fs.existsSync(d));
+
     for (const dir of checkDirs) {
-      if (fs.existsSync(cachedFilePath) && fs.statSync(cachedFilePath).size > 700000) {
-        return res.json({ cached: true });
+      for (const ext of ['.webm', '.m4a', '.mp3']) {
+        const candidate = path.join(dir, `${standardKey}${ext}`);
+        if (fs.existsSync(candidate) && fs.statSync(candidate).size > 150000) {
+          return res.json({ cached: true });
+        }
       }
       try {
         const files = fs.readdirSync(dir);
         if (videoId) {
-          const matchVid = files.find(f => f.includes(videoId.toLowerCase()) && f.endsWith('.mp3'));
+          const matchVid = files.find(f => f.includes(videoId.toLowerCase()) && (f.endsWith('.webm') || f.endsWith('.mp3') || f.endsWith('.m4a')));
           if (matchVid) {
             const p = path.join(dir, matchVid);
-            if (fs.statSync(p).size > 700000) return res.json({ cached: true });
+            if (fs.statSync(p).size > 150000) return res.json({ cached: true });
           }
         }
         if (cleanSong) {
@@ -1024,18 +1077,19 @@ app.get('/api/music/cached-status', (req, res) => {
           const aClean = cleanArtist.toLowerCase().replace(/[^a-z0-9]/g, '_');
           const match = files.find(f => {
             const lower = f.toLowerCase();
-            return lower.includes(sClean) && (aClean ? lower.includes(aClean) : true) && lower.endsWith('.mp3');
+            return lower.includes(sClean) && (aClean ? lower.includes(aClean) : true) && (lower.endsWith('.webm') || lower.endsWith('.mp3') || lower.endsWith('.m4a'));
           });
           if (match) {
             const p = path.join(dir, match);
-            if (fs.statSync(p).size > 700000) return res.json({ cached: true });
+            if (fs.statSync(p).size > 150000) return res.json({ cached: true });
           }
         }
       } catch {}
     }
 
     if (videoId || (cleanArtist && cleanSong)) {
-      triggerBackgroundCache(title, artist, videoId, cachedFilePath);
+      const defaultCachedPath = path.join(CACHE_DIR, `${standardKey}.webm`);
+      triggerBackgroundCache(title, artist, videoId, defaultCachedPath);
     }
     return res.json({ cached: false });
   } catch {
@@ -1043,12 +1097,23 @@ app.get('/api/music/cached-status', (req, res) => {
   }
 });
 
-// 2.3 Rota de Streaming Direto de Áudio para o Reprodutor HTML5 (Solução 1: Streaming Progressivo com Pipe Instantâneo)
+// 2.3 Rota de Streaming Direto de Áudio para o Reprodutor HTML5 (Streaming Progressivo com Pipe Instantâneo)
 app.get('/api/music/stream-audio', async (req, res) => {
+  const reqStart = Date.now();
+  const requestId = Math.random().toString(36).substring(2, 7);
+  const clientRange = req.headers.range;
+  const userAgent = req.headers['user-agent'] || 'unknown';
+
   try {
     const title = String(req.query.title || '').trim();
     const artist = String(req.query.artist || '').trim();
     let videoId = String(req.query.youtubeId || req.query.id || req.query.videoId || '').trim();
+
+    console.log(`[PERF BACKEND][${requestId}][+0ms] Chegada de requisição /api/music/stream-audio`);
+    console.log(`  -> URL: ${req.url}`);
+    console.log(`  -> Range: ${clientRange || 'NENHUM (sem range)'}`);
+    console.log(`  -> videoId: ${videoId || '(vazio)'} | title: "${title}" | artist: "${artist}"`);
+    console.log(`  -> User-Agent: ${userAgent.substring(0, 70)}...`);
 
     if (!title && !videoId) {
       return res.status(400).json({ error: 'Título ou ID obrigatório para streaming' });
@@ -1056,40 +1121,61 @@ app.get('/api/music/stream-audio', async (req, res) => {
 
     const { cleanArtist, cleanSong } = extractCleanArtistAndSong(title, artist);
     const standardKey = getCacheKey(cleanArtist, cleanSong, `${videoId || ''}_192_aud`);
-    let cachedFilePath = path.join(CACHE_DIR, `${standardKey}.mp3`);
+    const targetCachePath = path.join(CACHE_DIR, `${standardKey}.webm`);
 
-    // 1. Busca no cache em disco: se já existe (> 700KB para garantir faixa completa, nunca 30s), serve IMEDIATAMENTE
+    // 1. Busca no cache em disco: se já existe (> 150KB), serve IMEDIATAMENTE (0ms)
     const checkDirs = [CACHE_DIR, LEGACY_CACHE_DIR].filter(d => fs.existsSync(d));
+    let cachedFilePath: string | null = null;
+    let cachedMimeType = 'audio/webm';
+
     for (const dir of checkDirs) {
-      if (fs.existsSync(cachedFilePath) && fs.statSync(cachedFilePath).size > 700000) break;
+      for (const ext of ['.webm', '.m4a', '.mp3', '.ogg']) {
+        const candidate = path.join(dir, `${standardKey}${ext}`);
+        if (fs.existsSync(candidate) && fs.statSync(candidate).size > 150000) {
+          cachedFilePath = candidate;
+          cachedMimeType = ext === '.mp3' ? 'audio/mpeg' : ext === '.m4a' ? 'audio/mp4' : 'audio/webm';
+          break;
+        }
+      }
+      if (cachedFilePath) break;
+
       try {
         const files = fs.readdirSync(dir);
         if (videoId) {
-          const matchVid = files.find(f => f.includes(videoId.toLowerCase()) && f.endsWith('.mp3'));
+          const matchVid = files.find(f => f.includes(videoId.toLowerCase()) && (f.endsWith('.webm') || f.endsWith('.mp3') || f.endsWith('.m4a') || f.endsWith('.ogg')));
           if (matchVid) {
             const p = path.join(dir, matchVid);
-            if (fs.statSync(p).size > 700000) cachedFilePath = p;
+            if (fs.statSync(p).size > 150000) {
+              cachedFilePath = p;
+              cachedMimeType = p.endsWith('.mp3') ? 'audio/mpeg' : p.endsWith('.m4a') ? 'audio/mp4' : 'audio/webm';
+              break;
+            }
           }
         }
-        if ((!fs.existsSync(cachedFilePath) || fs.statSync(cachedFilePath).size <= 700000) && cleanSong) {
+        if (!cachedFilePath && cleanSong) {
           const sClean = cleanSong.toLowerCase().replace(/[^a-z0-9]/g, '_');
           const aClean = cleanArtist.toLowerCase().replace(/[^a-z0-9]/g, '_');
           const match = files.find(f => {
             const lower = f.toLowerCase();
-            return lower.includes(sClean) && (aClean ? lower.includes(aClean) : true) && lower.endsWith('.mp3');
+            return lower.includes(sClean) && (aClean ? lower.includes(aClean) : true) && (lower.endsWith('.webm') || lower.endsWith('.mp3') || lower.endsWith('.m4a') || lower.endsWith('.ogg'));
           });
           if (match) {
             const p = path.join(dir, match);
-            if (fs.statSync(p).size > 700000) cachedFilePath = p;
+            if (fs.statSync(p).size > 150000) {
+              cachedFilePath = p;
+              cachedMimeType = p.endsWith('.mp3') ? 'audio/mpeg' : p.endsWith('.m4a') ? 'audio/mp4' : 'audio/webm';
+              break;
+            }
           }
         }
       } catch {}
     }
 
     // Se já estiver em disco com áudio completo, serve via HTTP 206 Partial Content instantâneo
-    if (fs.existsSync(cachedFilePath)) {
+    if (cachedFilePath && fs.existsSync(cachedFilePath)) {
       const stat = fs.statSync(cachedFilePath);
-      if (stat.size > 700000) {
+      console.log(`[PERF BACKEND][${requestId}][+${Date.now() - reqStart}ms] CACHE HIT EM DISCO: ${cachedFilePath} (${(stat.size / 1024 / 1024).toFixed(2)} MB)`);
+      if (stat.size > 150000) {
         const range = req.headers.range;
 
         if (range) {
@@ -1102,49 +1188,88 @@ app.get('/api/music/stream-audio', async (req, res) => {
             'Content-Range': `bytes ${start}-${end}/${stat.size}`,
             'Accept-Ranges': 'bytes',
             'Content-Length': chunksize,
-            'Content-Type': 'audio/mpeg'
+            'Content-Type': cachedMimeType
           });
+          res.flushHeaders();
 
           if (req.method === 'HEAD') { res.end(); return; }
-          fs.createReadStream(cachedFilePath, { start, end }).pipe(res);
+          const diskStream = fs.createReadStream(cachedFilePath, { start, end });
+          let firstByteSent = false;
+          diskStream.on('data', () => {
+            if (!firstByteSent) {
+              firstByteSent = true;
+              console.log(`[PERF BACKEND][${requestId}][+${Date.now() - reqStart}ms] PRIMEIRO BYTE do cache enviado ao cliente`);
+            }
+          });
+          diskStream.on('end', () => {
+            console.log(`[PERF BACKEND][${requestId}][+${Date.now() - reqStart}ms] ÚLTIMO BYTE do cache enviado`);
+          });
+          diskStream.pipe(res);
           return;
         } else {
           res.writeHead(200, {
             'Content-Length': stat.size,
-            'Content-Type': 'audio/mpeg',
+            'Content-Type': cachedMimeType,
             'Accept-Ranges': 'bytes'
           });
+          res.flushHeaders();
 
           if (req.method === 'HEAD') { res.end(); return; }
-          fs.createReadStream(cachedFilePath).pipe(res);
+          const diskStream = fs.createReadStream(cachedFilePath);
+          let firstByteSent = false;
+          diskStream.on('data', () => {
+            if (!firstByteSent) {
+              firstByteSent = true;
+              console.log(`[PERF BACKEND][${requestId}][+${Date.now() - reqStart}ms] PRIMEIRO BYTE do cache enviado ao cliente (200 OK)`);
+            }
+          });
+          diskStream.on('end', () => {
+            console.log(`[PERF BACKEND][${requestId}][+${Date.now() - reqStart}ms] ÚLTIMO BYTE do cache enviado`);
+          });
+          diskStream.pipe(res);
           return;
         }
       }
     }
 
-    // 2. Se não estiver em disco, resolve o fluxo de áudio direto para transmissão progressiva instantânea
+    console.log(`[PERF BACKEND][${requestId}][+${Date.now() - reqStart}ms] CACHE MISS: Áudio precisa ser resolvido/transmitido online`);
+
+    // 2. Se não estiver em disco e videoId estiver ausente, busca no yt-search
     if (!videoId && (cleanArtist || cleanSong)) {
+      const tSearchStart = Date.now();
+      console.log(`[PERF BACKEND][${requestId}][+${tSearchStart - reqStart}ms] Iniciando yt-search para "${cleanArtist} ${cleanSong}"...`);
       try {
         const searchRes = await yts(`${cleanArtist} ${cleanSong}`.trim());
         const topVideo = searchRes.videos?.[0];
         if (topVideo?.videoId) {
           videoId = topVideo.videoId;
+          console.log(`[PERF BACKEND][${requestId}][+${Date.now() - reqStart}ms] yt-search CONCLUÍDO em ${Date.now() - tSearchStart}ms -> videoId: ${videoId}`);
+        } else {
+          console.log(`[PERF BACKEND][${requestId}][+${Date.now() - reqStart}ms] yt-search CONCLUÍDO em ${Date.now() - tSearchStart}ms SEM resultados de vídeo`);
         }
-      } catch {}
+      } catch (searchErr: any) {
+        console.warn(`[PERF BACKEND][${requestId}][+${Date.now() - reqStart}ms] yt-search FALHOU após ${Date.now() - tSearchStart}ms:`, searchErr.message);
+      }
     }
 
     if (videoId) {
+      const tResolveStart = Date.now();
+      console.log(`[PERF BACKEND][${requestId}][+${tResolveStart - reqStart}ms] Início da resolução de URL direta (resolveDirectAudioStreamUrl) para videoId: ${videoId}...`);
       const directStreamUrl = await resolveDirectAudioStreamUrl(videoId, cleanSong, cleanArtist);
+      console.log(`[PERF BACKEND][${requestId}][+${Date.now() - reqStart}ms] Fim de resolveDirectAudioStreamUrl (durou ${Date.now() - tResolveStart}ms) -> ${directStreamUrl ? 'URL ENCONTRADA' : 'NENHUMA URL'}`);
+
       if (directStreamUrl) {
         try {
           const proxyHeaders: Record<string, string> = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Range': clientRange || 'bytes=0-'
           };
-          if (req.headers.range) {
-            proxyHeaders['Range'] = req.headers.range;
-          }
 
+          const tFetchStart = Date.now();
+          console.log(`[PERF BACKEND][${requestId}][+${tFetchStart - reqStart}ms] Início do fetch da URL remota...`);
           const remoteRes = await fetch(directStreamUrl, { headers: proxyHeaders });
+          console.log(`[PERF BACKEND][${requestId}][+${Date.now() - reqStart}ms] Fetch da URL remota retornou em ${Date.now() - tFetchStart}ms -> HTTP ${remoteRes.status}`);
+
           if (remoteRes.ok || remoteRes.status === 206) {
             const rawType = (remoteRes.headers.get('content-type') || '').toLowerCase();
             if (rawType.includes('text/html') || rawType.includes('text/plain')) {
@@ -1153,15 +1278,17 @@ app.get('/api/music/stream-audio', async (req, res) => {
             }
 
             const respHeaders: Record<string, string | number> = {
-              'Content-Type': rawType && !rawType.includes('text') ? rawType : 'audio/mpeg',
+              'Content-Type': rawType && !rawType.includes('text') ? rawType : 'audio/webm',
               'Accept-Ranges': 'bytes'
             };
             const cl = remoteRes.headers.get('content-length');
             if (cl) respHeaders['Content-Length'] = cl;
             const cr = remoteRes.headers.get('content-range');
-            if (cr) respHeaders['Content-Range'] = cr;
+            if (cr && clientRange) respHeaders['Content-Range'] = cr;
 
-            res.writeHead(remoteRes.status, respHeaders);
+            const statusCode = clientRange ? remoteRes.status : 200;
+            res.writeHead(statusCode, respHeaders);
+            res.flushHeaders();
 
             if (req.method === 'HEAD') {
               res.end();
@@ -1169,98 +1296,143 @@ app.get('/api/music/stream-audio', async (req, res) => {
             }
 
             const webStream = Readable.fromWeb(remoteRes.body as any);
+            let firstByteSent = false;
+            webStream.on('data', (chunk) => {
+              if (!firstByteSent) {
+                firstByteSent = true;
+                console.log(`[PERF BACKEND][${requestId}][+${Date.now() - reqStart}ms] PRIMEIRO BYTE do fluxo remoto enviado ao cliente! (chunk de ${chunk.length} bytes)`);
+              }
+            });
+            webStream.on('end', () => {
+              console.log(`[PERF BACKEND][${requestId}][+${Date.now() - reqStart}ms] ÚLTIMO BYTE do fluxo remoto transferido`);
+            });
 
-            // Streaming Progressivo com Pipe contínuo e persistência em cache
-            const isFullStream = !req.headers.range || req.headers.range.startsWith('bytes=0-');
-            if (isFullStream && !fs.existsSync(cachedFilePath)) {
-              const tempWritingPath = `${cachedFilePath}.pipe_${Date.now()}`;
+            // Streaming Progressivo com Desacoplamento de Backpressure
+            const isFullStream = !clientRange || clientRange.startsWith('bytes=0-');
+            if (isFullStream && !fs.existsSync(targetCachePath)) {
+              const tempWritingPath = `${targetCachePath}.pipe_${Date.now()}`;
               const diskWriteStream = fs.createWriteStream(tempWritingPath);
 
-              const passRes = new PassThrough();
-              const passDisk = new PassThrough();
+              webStream.pipe(res);
 
-              webStream.pipe(passRes);
-              webStream.pipe(passDisk);
-
-              passRes.pipe(res);
-              passDisk.pipe(diskWriteStream);
-
+              webStream.on('data', (chunk) => {
+                try { diskWriteStream.write(chunk); } catch {}
+              });
+              webStream.on('end', () => {
+                try { diskWriteStream.end(); } catch {}
+              });
+              webStream.on('error', () => {
+                try {
+                  diskWriteStream.destroy();
+                  if (fs.existsSync(tempWritingPath)) fs.unlinkSync(tempWritingPath);
+                } catch {}
+              });
               diskWriteStream.on('finish', () => {
                 try {
-                  if (fs.existsSync(tempWritingPath) && fs.statSync(tempWritingPath).size > 700000) {
-                    fs.renameSync(tempWritingPath, cachedFilePath);
-                    console.log(`[Stream Pipe] Faixa em cache gravada com sucesso durante a reprodução: ${path.basename(cachedFilePath)}`);
+                  if (fs.existsSync(tempWritingPath) && fs.statSync(tempWritingPath).size > 150000) {
+                    fs.renameSync(tempWritingPath, targetCachePath);
+                    console.log(`[Stream Pipe] Faixa em cache gravada: ${path.basename(targetCachePath)}`);
                   } else if (fs.existsSync(tempWritingPath)) {
                     fs.unlinkSync(tempWritingPath);
                   }
                 } catch {}
               });
-
               diskWriteStream.on('error', () => {
                 try { if (fs.existsSync(tempWritingPath)) fs.unlinkSync(tempWritingPath); } catch {}
               });
               return;
             } else {
               webStream.pipe(res);
-              if (!fs.existsSync(cachedFilePath)) {
-                triggerBackgroundCache(title, artist, videoId, cachedFilePath);
-              }
               return;
             }
           }
         } catch (proxyErr: any) {
-          console.warn('[Stream Proxy] Falha no proxy direto, acionando download completo sob demanda:', proxyErr.message);
+          console.warn(`[PERF BACKEND][${requestId}][+${Date.now() - reqStart}ms] Falha no proxy direto: ${proxyErr.message}, ativando fallback yt-dlp stdout pipe...`);
         }
       }
     }
 
-    // 3. Fallback de Áudio 100% Completo (NUNCA corta em 30s nem redireciona para preview)
-    // Se o proxy direto não conectou de imediato, baixa a faixa completa em alta qualidade e faz o stream imediato
-    console.log(`[Stream Audio] Obtendo faixa completa via motor AudioFlix para "${cleanSong}" - ${cleanArtist}...`);
-    try {
-      // Se a conexão direta falhar, tenta obter a faixa completa com teto máximo de 3.8s para nunca ultrapassar 5s
-      const downloadPromise = downloadFullTrackAsMp3(title, artist, videoId);
-      const fullResult = await Promise.race([
-        downloadPromise,
-        new Promise<any>((r) => setTimeout(() => r(null), 3800))
-      ]);
-      if (fullResult?.filePath && fs.existsSync(fullResult.filePath)) {
-        const stat = fs.statSync(fullResult.filePath);
-        if (stat.size > 700000) {
-          const streamRange = req.headers.range;
-          if (streamRange) {
-            const parts = streamRange.replace(/bytes=/, '').split('-');
-            const start = parseInt(parts[0], 10);
-            const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
-            const chunksize = end - start + 1;
-            res.writeHead(206, {
-              'Content-Range': `bytes ${start}-${end}/${stat.size}`,
-              'Accept-Ranges': 'bytes',
-              'Content-Length': chunksize,
-              'Content-Type': 'audio/mpeg'
-            });
-            if (req.method === 'HEAD') { res.end(); return; }
-            fs.createReadStream(fullResult.filePath, { start, end }).pipe(res);
-            return;
-          } else {
-            res.writeHead(200, {
-              'Content-Length': stat.size,
-              'Content-Type': 'audio/mpeg',
-              'Accept-Ranges': 'bytes'
-            });
-            if (req.method === 'HEAD') { res.end(); return; }
-            fs.createReadStream(fullResult.filePath).pipe(res);
-            return;
+    // 3. Fallback: Streaming Direto por Pipe do yt-dlp
+    if (videoId) {
+      console.log(`[PERF BACKEND][${requestId}][+${Date.now() - reqStart}ms] Fallback yt-dlp stdout pipe iniciando para videoId: ${videoId}...`);
+      const cookiesPath = path.resolve(process.cwd(), 'cookies.txt');
+      const ytdlpArgs = [
+        '--js-runtimes', 'node:/usr/local/bin/node',
+        '-4',
+        '--no-playlist',
+        '--no-warnings',
+        '-f', 'ba/b/140/251/18',
+        '-o', '-',
+        `https://www.youtube.com/watch?v=${videoId}`
+      ];
+      if (fs.existsSync(cookiesPath) && fs.statSync(cookiesPath).size > 50) {
+        ytdlpArgs.unshift('--cookies', cookiesPath);
+      }
+
+      res.writeHead(200, {
+        'Content-Type': 'audio/webm',
+        'Accept-Ranges': 'bytes'
+      });
+      res.flushHeaders();
+
+      if (req.method === 'HEAD') {
+        res.end();
+        return;
+      }
+
+      const child = spawn(ytDlpPath, ytdlpArgs, {
+        env: { ...process.env, PYTHONWARNINGS: 'ignore' }
+      });
+
+      const tempWritingPath = `${targetCachePath}.pipe_${Date.now()}`;
+      const diskWriteStream = fs.createWriteStream(tempWritingPath);
+
+      let firstByteSent = false;
+      child.stdout.on('data', (chunk) => {
+        if (!firstByteSent) {
+          firstByteSent = true;
+          console.log(`[PERF BACKEND][${requestId}][+${Date.now() - reqStart}ms] PRIMEIRO BYTE do yt-dlp pipe enviado ao cliente! (chunk de ${chunk.length} bytes)`);
+        }
+        try { diskWriteStream.write(chunk); } catch {}
+      });
+
+      child.stdout.on('end', () => {
+        console.log(`[PERF BACKEND][${requestId}][+${Date.now() - reqStart}ms] ÚLTIMO BYTE do yt-dlp pipe finalizado`);
+        try { diskWriteStream.end(); } catch {}
+      });
+
+      child.on('error', (err) => {
+        console.warn(`[PERF BACKEND][${requestId}][+${Date.now() - reqStart}ms] yt-dlp pipe erro:`, err.message);
+        try {
+          diskWriteStream.destroy();
+          if (fs.existsSync(tempWritingPath)) fs.unlinkSync(tempWritingPath);
+        } catch {}
+      });
+
+      child.stdout.pipe(res);
+
+      diskWriteStream.on('finish', () => {
+        try {
+          if (fs.existsSync(tempWritingPath) && fs.statSync(tempWritingPath).size > 150000) {
+            fs.renameSync(tempWritingPath, targetCachePath);
+            console.log(`[yt-dlp Pipe Cache] Faixa salva: ${path.basename(targetCachePath)}`);
+          } else if (fs.existsSync(tempWritingPath)) {
+            fs.unlinkSync(tempWritingPath);
           }
-        }
-      }
-    } catch (dlErr: any) {
-      console.warn('[Stream Audio] Falha ao extrair áudio completo sob demanda:', dlErr.message);
+        } catch {}
+      });
+
+      diskWriteStream.on('error', () => {
+        try { if (fs.existsSync(tempWritingPath)) fs.unlinkSync(tempWritingPath); } catch {}
+      });
+
+      return;
     }
 
+    console.log(`[PERF BACKEND][${requestId}][+${Date.now() - reqStart}ms] FALHA TOTAL: Nenhum stream pôde ser obtido`);
     res.status(503).json({ error: 'Fluxo temporariamente indisponível' });
   } catch (err: any) {
-    console.error('Erro em /api/music/stream-audio:', err);
+    console.error(`[PERF BACKEND][${requestId}][+${Date.now() - reqStart}ms] Exceção em /api/music/stream-audio:`, err);
     res.status(500).json({ error: 'Falha ao transmitir áudio completo', details: err.message });
   }
 });
@@ -1443,11 +1615,21 @@ app.get('/api/youtube/stream-url', async (req, res) => {
     const videoId = extractYouTubeVideoId(input);
     if (!videoId) return res.status(400).json({ error: 'ID ou URL obrigatório' });
 
-    const { stdout } = await execFilePromise(ytDlpPath, [
+    const cookiesPath = path.resolve(process.cwd(), 'cookies.txt');
+    const ytdlpStreamArgs = [
+      '--js-runtimes', 'node:/usr/local/bin/node',
+      '-4',
+      '--http-chunk-size', '10485760',
+      '--buffer-size', '16K',
       '-g',
       '-f', '140/251/bestaudio',
       `https://www.youtube.com/watch?v=${videoId}`
-    ], { timeout: 15000 });
+    ];
+    if (fs.existsSync(cookiesPath) && fs.statSync(cookiesPath).size > 50) {
+      ytdlpStreamArgs.unshift('--cookies', cookiesPath);
+    }
+
+    const { stdout } = await execFilePromise(ytDlpPath, ytdlpStreamArgs, { timeout: 15000 });
 
     const streamUrl = stdout.trim().split('\n')[0];
     res.json({ videoId, streamUrl });

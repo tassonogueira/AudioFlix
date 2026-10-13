@@ -1,5 +1,5 @@
 /**
- * AudioFix - Aplicação Web SPA para Reparo, Renomeação e Conversão Inteligente de Áudio
+ * AudioFlix - Aplicação Web SPA para Reparo, Renomeação e Conversão Inteligente de Áudio
  * 
  * Funciona em 4 Etapas Claras (Workflow em Etapas):
  * - Etapa 1: Carregar Músicas (Upload de arquivos, pastas do pendrive ou amostras de teste)
@@ -51,8 +51,7 @@ import {
   ListPlus,
   ListMusic,
   Flame,
-  Cloud,
-  Mic
+  Cloud
 } from 'lucide-react';
 import JSZip from 'jszip';
 import YouTubeMusicDownloader from './components/YouTubeMusicDownloader.tsx';

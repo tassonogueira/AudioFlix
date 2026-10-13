@@ -1,5 +1,5 @@
 /**
- * AudioFix - Motor de Transcodificação e Reparo de Áudio (Client-Side)
+ * AudioFlix - Motor de Transcodificação e Reparo de Áudio (Client-Side)
  * 
  * Permite selecionar o formato de destino (MP3, WAV, FLAC, OGG, M4A).
  * Se o arquivo já estiver no formato desejado, executa extração direta
